@@ -1,0 +1,34 @@
+#!/bin/bash
+# omarchy:summary=Allow an authorized USB device via USBGuard
+# omarchy:args=<device-id> [-p]
+# omarchy:examples=omarchy-usbguard-allow 14 -p
+
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: omarchy-usbguard-allow <device-id> [-p|--permanent]" >&2
+  exit 1
+fi
+
+device_id="$1"
+permanent="${2:-}"
+
+if [[ "$permanent" == "-p" || "$permanent" == "--permanent" ]]; then
+  usbguard allow-device "$device_id" -p
+  omarchy-notification-send \
+    -r 9876 \
+    -g "" \
+    -u normal \
+    --app-name "USBGuard" \
+    "Trusted USB Device Saved" \
+    "Device #$device_id has been permanently added to the trusted whitelist."
+else
+  usbguard allow-device "$device_id"
+  omarchy-notification-send \
+    -r 9876 \
+    -g "󰚥" \
+    -u normal \
+    --app-name "USBGuard" \
+    "USB Device Authorized" \
+    "Device #$device_id temporarily authorized for this session."
+fi

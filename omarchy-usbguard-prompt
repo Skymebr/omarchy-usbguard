@@ -1,0 +1,76 @@
+#!/bin/bash
+# omarchy:summary=Interactive prompt to authorize blocked USB devices via Quickshell Menu
+# omarchy:args=<device-id> [device-name] [device-type]
+
+set -euo pipefail
+
+if (( $# < 1 )); then
+  echo "Usage: omarchy-usbguard-prompt <device-id> [device-name] [device-type]" >&2
+  exit 1
+fi
+
+dev_id="$1"
+dev_name="${2:-USB Device}"
+dev_type="${3:-Peripheral}"
+
+# Pick appropriate menu icon based on device type
+menu_glyph="󰚥"
+if [[ "$dev_type" =~ "Storage" ]]; then
+  menu_glyph="󰋊"
+elif [[ "$dev_type" =~ "Keyboard" ]]; then
+  menu_glyph=""
+elif [[ "$dev_type" =~ "Mouse" ]]; then
+  menu_glyph="󰍽"
+elif [[ "$dev_type" =~ "Audio" ]]; then
+  menu_glyph="󰋋"
+elif [[ "$dev_type" =~ "Camera" ]]; then
+  menu_glyph="󰄀"
+elif [[ "$dev_type" =~ "Network" ]]; then
+  menu_glyph="󰖩"
+elif [[ "$dev_type" =~ "Bluetooth" ]]; then
+  menu_glyph="󰂯"
+fi
+
+# Options format for omarchy-menu-select: "<glyph>\t<label>\t<subtext>"
+opt_session="${menu_glyph}"$'\t'"Allow for this session only"$'\t'"Temporarily authorize device until unplugged"
+opt_permanent=$'\tTrust permanently\tSave to permanent system whitelist'
+opt_block=$'󰅙\tKeep blocked\tReject device and block all communication'
+
+# Open the native Omarchy Quickshell menu
+chosen=$(omarchy-menu-select "Authorize $dev_name · $dev_type" \
+  "$opt_session" \
+  "$opt_permanent" \
+  "$opt_block" \
+  -- --width 560 2>/dev/null || true)
+
+case "$chosen" in
+*"Allow for this session only"*)
+  usbguard allow-device "$dev_id"
+  omarchy-notification-send \
+    -r 9876 \
+    -g "$menu_glyph" \
+    -u normal \
+    --app-name "USBGuard" \
+    "USB Device Authorized" \
+    "$dev_name temporarily authorized for this session."
+  ;;
+*"Trust permanently"*)
+  usbguard allow-device "$dev_id" -p
+  omarchy-notification-send \
+    -r 9876 \
+    -g "" \
+    -u normal \
+    --app-name "USBGuard" \
+    "Trusted USB Device Saved" \
+    "$dev_name added permanently to the whitelist."
+  ;;
+*"Keep blocked"*|"")
+  omarchy-notification-send \
+    -r 9876 \
+    -g "󰅙" \
+    -u low \
+    --app-name "USBGuard" \
+    "USB Device Remains Blocked" \
+    "$dev_name was not authorized."
+  ;;
+esac

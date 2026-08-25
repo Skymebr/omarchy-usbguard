@@ -1,0 +1,82 @@
+#!/bin/bash
+# omarchy:summary=Set up and configure USBGuard hardware protection
+# omarchy:args=[--remove]
+# omarchy:examples=omarchy setup security usbguard | omarchy-setup-usbguard --remove
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+USER_BIN_DIR="${HOME}/.local/bin"
+SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
+
+REMOVE=0
+if [[ "${1:-}" == "--remove" ]]; then
+  REMOVE=1
+fi
+
+if (( REMOVE )); then
+  echo "==> Removing USBGuard services and configuration..."
+  systemctl --user stop omarchy-usbguard-notify.service 2>/dev/null || true
+  systemctl --user disable omarchy-usbguard-notify.service 2>/dev/null || true
+  rm -f "${SYSTEMD_USER_DIR}/omarchy-usbguard-notify.service"
+  sudo systemctl stop usbguard.service 2>/dev/null || true
+  sudo systemctl disable usbguard.service 2>/dev/null || true
+  sudo rm -f /etc/usbguard/rules.conf
+  sudo rm -f /etc/usbguard/IPCAccessControl.d/*
+  echo "==> USBGuard hardware protection successfully disabled!"
+  exit 0
+fi
+
+echo "==> 1. Checking for usbguard package..."
+if ! pacman -Q usbguard &>/dev/null; then
+  sudo pacman -S --noconfirm --needed usbguard
+fi
+
+echo "==> 2. Generating baseline policy (whitelist) for currently connected devices..."
+if [[ ! -f /etc/usbguard/rules.conf ]]; then
+  sudo usbguard generate-policy > /tmp/rules.conf
+  sudo install -m 0600 -o root -g root /tmp/rules.conf /etc/usbguard/rules.conf
+  rm -f /tmp/rules.conf
+fi
+
+echo "==> 3. Configuring IPC permissions for wheel group..."
+sudo usbguard add-user -g wheel -d modify,list,listen -p modify,list -e listen -P listen 2>/dev/null || true
+
+echo "==> 4. Installing scripts to ${USER_BIN_DIR}..."
+mkdir -p "${USER_BIN_DIR}"
+if [[ "${SCRIPT_DIR}" != "${USER_BIN_DIR}" ]]; then
+  cp -f "${SCRIPT_DIR}/omarchy-usbguard-watch" "${USER_BIN_DIR}/"
+  cp -f "${SCRIPT_DIR}/omarchy-usbguard-prompt" "${USER_BIN_DIR}/"
+  cp -f "${SCRIPT_DIR}/omarchy-usbguard-allow" "${USER_BIN_DIR}/"
+  cp -f "${SCRIPT_DIR}/omarchy-setup-usbguard" "${USER_BIN_DIR}/"
+fi
+chmod +x "${USER_BIN_DIR}"/omarchy-usbguard-* "${USER_BIN_DIR}"/omarchy-setup-usbguard
+
+echo "==> 5. Setting up systemd user notification service..."
+mkdir -p "${SYSTEMD_USER_DIR}"
+cat << 'EOF' > "${SYSTEMD_USER_DIR}/omarchy-usbguard-notify.service"
+[Unit]
+Description=Omarchy USBGuard Notification Watcher
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/omarchy-usbguard-watch
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+
+echo "==> 6. Enabling and restarting services..."
+sudo systemctl enable --now usbguard.service
+sudo systemctl restart usbguard.service
+
+systemctl --user daemon-reload
+systemctl --user enable --now omarchy-usbguard-notify.service
+systemctl --user restart omarchy-usbguard-notify.service
+
+echo "==> Success! USBGuard hardware protection is active and integrated with Omarchy Shell."
