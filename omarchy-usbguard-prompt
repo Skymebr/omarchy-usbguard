@@ -1,21 +1,25 @@
 #!/bin/bash
-# omarchy:summary=Interactive prompt to authorize blocked USB devices via Quickshell Menu
-# omarchy:args=<device-id> [device-name] [device-type]
+# omarchy:summary=Interactive prompt to authorize, block, or reject USB devices via Quickshell Menu
+# omarchy:args=<device-id> <device-hash> [device-name] [device-type] [is-combo]
 
 set -euo pipefail
 
-if (( $# < 1 )); then
-  echo "Usage: omarchy-usbguard-prompt <device-id> [device-name] [device-type]" >&2
+if (( $# < 2 )); then
+  echo "Usage: omarchy-usbguard-prompt <device-id> <device-hash> [device-name] [device-type] [is-combo]" >&2
   exit 1
 fi
 
 dev_id="$1"
-dev_name="${2:-USB Device}"
-dev_type="${3:-Peripheral}"
+dev_hash="$2"
+dev_name="${3:-USB Device}"
+dev_type="${4:-Peripheral}"
+is_combo="${5:-single}"
 
 # Pick appropriate menu icon based on device type
 menu_glyph="󰚥"
-if [[ "$dev_type" =~ "Storage" ]]; then
+if [[ "$is_combo" == "combo" ]]; then
+  menu_glyph="󰚌"
+elif [[ "$dev_type" =~ "Storage" ]]; then
   menu_glyph="󰋊"
 elif [[ "$dev_type" =~ "Keyboard" ]]; then
   menu_glyph=""
@@ -34,43 +38,34 @@ fi
 # Options format for omarchy-menu-select: "<glyph>\t<label>\t<subtext>"
 opt_session="${menu_glyph}"$'\t'"Allow for this session only"$'\t'"Temporarily authorize device until unplugged"
 opt_permanent=$'\tTrust permanently\tSave to permanent system whitelist'
-opt_block=$'󰅙\tKeep blocked\tReject device and block all communication'
+opt_reject=$'󰅙\tReject device\tBlock communication and destroy device node in kernel'
+opt_block=$'󰌾\tKeep blocked\tKeep device blocked without modifying rules'
 
-# Open the native Omarchy Quickshell menu
-chosen=$(omarchy-menu-select "Authorize $dev_name · $dev_type" \
+# Title warning for BadUSB combo devices
+menu_title="Authorize $dev_name · $dev_type"
+if [[ "$is_combo" == "combo" ]]; then
+  menu_title="⚠️ BadUSB Combo Warning: Authorize $dev_name?"
+fi
+
+# Open native Omarchy Quickshell selection menu
+chosen=$(omarchy-menu-select "$menu_title" \
   "$opt_session" \
   "$opt_permanent" \
+  "$opt_reject" \
   "$opt_block" \
-  -- --width 560 2>/dev/null || true)
+  -- --width 620 2>/dev/null || true)
 
 case "$chosen" in
 *"Allow for this session only"*)
-  usbguard allow-device "$dev_id"
-  omarchy-notification-send \
-    -r 9876 \
-    -g "$menu_glyph" \
-    -u normal \
-    --app-name "USBGuard" \
-    "USB Device Authorized" \
-    "$dev_name temporarily authorized for this session."
+  omarchy-usbguard-allow "allow" "$dev_id" "$dev_hash" "$dev_name"
   ;;
 *"Trust permanently"*)
-  usbguard allow-device "$dev_id" -p
-  omarchy-notification-send \
-    -r 9876 \
-    -g "" \
-    -u normal \
-    --app-name "USBGuard" \
-    "Trusted USB Device Saved" \
-    "$dev_name added permanently to the whitelist."
+  omarchy-usbguard-allow "allow-permanent" "$dev_id" "$dev_hash" "$dev_name"
+  ;;
+*"Reject device"*)
+  omarchy-usbguard-allow "reject" "$dev_id" "$dev_hash" "$dev_name"
   ;;
 *"Keep blocked"*|"")
-  omarchy-notification-send \
-    -r 9876 \
-    -g "󰅙" \
-    -u low \
-    --app-name "USBGuard" \
-    "USB Device Remains Blocked" \
-    "$dev_name was not authorized."
+  omarchy-usbguard-allow "block" "$dev_id" "$dev_hash" "$dev_name"
   ;;
 esac

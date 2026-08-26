@@ -1,0 +1,326 @@
+#!/bin/bash
+# Shared helpers for omarchy-usbguard-*. Sourced, not executed.
+# Device-supplied strings (iProduct, iSerial) are attacker-controlled.
+
+ug_sanitize() {
+  local text="${1-}" limit="${2:-96}"
+  text="${text//$'\r'/ }"
+  text="${text//$'\n'/ }"
+  text="${text//$'\t'/ }"
+  local i char out=""
+  local -i n=${#text}
+  for ((i = 0; i < n; i++)); do
+    char="${text:i:1}"
+    if [[ "$char" < $'\x20' || "$char" == $'\x7f' ]]; then
+      out+=" "
+    else
+      out+="$char"
+    fi
+  done
+  out="${out//  / }"
+  out="${out#"${out%%[![:space:]]*}"}"
+  out="${out%"${out##*[![:space:]]}"}"
+  if ((${#out} > limit)); then
+    out="${out:0:limit-1}…"
+  fi
+  printf '%s' "$out"
+}
+
+# Never hand a leading-dash string to a command line as a positional.
+ug_safe_arg() {
+  local text
+  text="$(ug_sanitize "${1-}" "${2:-64}")"
+  while [[ "$text" == -* ]]; do
+    text="${text#-}"
+  done
+  text="${text#"${text%%[![:space:]]*}"}"
+  if [[ -z "$text" ]]; then
+    printf '%s' "-"
+  else
+    printf '%s' "$text"
+  fi
+}
+
+ug_is_device_id() {
+  [[ "${1-}" =~ ^[0-9]+$ ]]
+}
+
+ug_is_hash() {
+  local h="${1-}"
+  [[ "$h" =~ ^[A-Za-z0-9+/=]+$ ]] && ((${#h} >= 16 && ${#h} <= 128))
+}
+
+# Attribute whose value is a quoted string. Requires a token boundary so
+# `hash` does not match `parent-hash`.
+ug_extract_quoted() {
+  local key="$1" rule="${2-}"
+  if [[ "$rule" =~ (^|[[:space:]])${key}[[:space:]]+\"([^\"]*)\" ]]; then
+    printf '%s' "${BASH_REMATCH[2]}"
+  fi
+}
+
+ug_extract_vidpid() {
+  local rule="${1-}"
+  if [[ "$rule" =~ (^|[[:space:]])id[[:space:]]+([0-9a-fA-F]{4}:[0-9a-fA-F]{4}) ]]; then
+    printf '%s' "${BASH_REMATCH[2],,}"
+  fi
+}
+
+# Space-separated interface codes, braces optional.
+ug_extract_interfaces() {
+  local rule="${1-}"
+  if [[ "$rule" =~ with-interface[[:space:]]+\{([^}]*)\} ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  elif [[ "$rule" =~ with-interface[[:space:]]+([0-9a-fA-F:]+) ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  fi
+}
+
+ug_extract_connect_type() {
+  ug_extract_quoted "with-connect-type" "${1-}"
+}
+
+ug_class_name() {
+  local code="${1,,}"
+  local head="${code%%:*}"
+  case "$head" in
+  01) printf '%s' "Audio" ;;
+  02) printf '%s' "Communications" ;;
+  03) printf '%s' "HID" ;;
+  07) printf '%s' "Printer" ;;
+  08) printf '%s' "Mass storage" ;;
+  09) printf '%s' "Hub" ;;
+  0a) printf '%s' "CDC data" ;;
+  0b) printf '%s' "Smart card" ;;
+  0e) printf '%s' "Video" ;;
+  e0) printf '%s' "Wireless" ;;
+  *) printf '%s' "" ;;
+  esac
+}
+
+# Prints: type|glyph|combo|classes
+# Classification is by USB interface class, never by iProduct (names lie).
+ug_classify() {
+  local ifaces="${1-}"
+  local has_storage=0 has_hid=0 has_kbd=0 has_mouse=0
+  local has_audio=0 has_video=0 has_net=0 has_wireless=0 has_hub=0
+  local code head proto
+  local -a extras=()
+
+  for code in $ifaces; do
+    code="${code,,}"
+    head="${code%%:*}"
+    proto="${code#*:}"
+    case "$head" in
+    08) has_storage=1 ;;
+    03)
+      has_hid=1
+      [[ "$proto" == "01:01" ]] && has_kbd=1
+      [[ "$proto" == "01:02" ]] && has_mouse=1
+      ;;
+    01) has_audio=1 ;;
+    0e) has_video=1 ;;
+    02) has_net=1 ;;
+    e0) has_wireless=1 ;;
+    09) has_hub=1 ;;
+    *)
+      local label
+      label="$(ug_class_name "$code")"
+      if [[ -n "$label" ]]; then
+        extras+=("$label")
+      fi
+      ;;
+    esac
+  done
+
+  local combo=0
+  if ((has_storage && has_hid)); then
+    combo=1
+  fi
+
+  local -a classes=()
+  ((has_storage)) && classes+=("Mass storage")
+  if ((combo)); then
+    classes+=("HID")
+  else
+    ((has_kbd)) && classes+=("Keyboard")
+    ((has_mouse)) && classes+=("Mouse")
+    if ((has_hid && !has_kbd && !has_mouse)); then
+      classes+=("HID")
+    fi
+  fi
+  ((has_audio)) && classes+=("Audio")
+  ((has_video)) && classes+=("Video")
+  ((has_net)) && classes+=("Communications")
+  ((has_wireless)) && classes+=("Wireless")
+  ((has_hub)) && classes+=("Hub")
+  local extra
+  for extra in "${extras[@]+"${extras[@]}"}"; do
+    local seen=0 c
+    for c in "${classes[@]+"${classes[@]}"}"; do
+      [[ "$c" == "$extra" ]] && seen=1 && break
+    done
+    ((seen)) || classes+=("$extra")
+  done
+
+  local joined="Peripheral"
+  if ((${#classes[@]} > 0)); then
+    local IFS=" · "
+    joined="${classes[*]}"
+  fi
+
+  local glyph="󰚥"
+  if ((has_storage)); then
+    glyph="󰋊"
+  elif ((has_kbd || (has_hid && !has_mouse))); then
+    glyph=""
+  elif ((has_mouse)); then
+    glyph="󰍽"
+  elif ((has_audio)); then
+    glyph="󰋋"
+  elif ((has_video)); then
+    glyph="󰄀"
+  elif ((has_net)); then
+    glyph="󰖩"
+  elif ((has_wireless)); then
+    glyph="󰂯"
+  fi
+
+  printf '%s|%s|%s|%s' "$joined" "$glyph" "$combo" "$joined"
+}
+
+ug_is_generic_name() {
+  local n="${1,,}"
+  case "$n" in
+  "" | "usb device" | "mass storage" | "generic" | "unknown" | "-" | "usb") return 0 ;;
+  esac
+  return 1
+}
+
+ug_resolve_name() {
+  local vid_pid="$1" raw_name="$2"
+  local name resolved=""
+  name="$(ug_sanitize "$raw_name" 64)"
+
+  if [[ -n "$vid_pid" ]] && ug_is_generic_name "$name"; then
+    resolved="$(lsusb -d "$vid_pid" 2>/dev/null | sed -E 's/.*ID [0-9a-fA-F:]+ //' | head -n1 || true)"
+    resolved="$(ug_sanitize "$resolved" 64)"
+  fi
+
+  if [[ -n "$resolved" ]] && ! ug_is_generic_name "$resolved"; then
+    printf '%s' "$resolved"
+  elif [[ -n "$name" ]] && ! ug_is_generic_name "$name"; then
+    printf '%s' "$name"
+  elif [[ -n "$resolved" ]]; then
+    printf '%s' "$resolved"
+  elif [[ -n "$name" ]]; then
+    printf '%s' "$name"
+  else
+    printf '%s' "USB device"
+  fi
+}
+
+ug_replace_id() {
+  local key="${1-}"
+  if [[ -z "$key" ]]; then
+    printf '%s' "9876"
+    return
+  fi
+  local n
+  n="$(printf '%s' "$key" | cksum | awk '{print $1}')"
+  printf '%s' "$((n % 2000000000 + 10000))"
+}
+
+ug_is_boring_device() {
+  local classes="${1-}" name="${2-}"
+  [[ "$classes" == "Hub" ]] && return 0
+  [[ "$name" == *"Host Controller"* ]] && return 0
+  return 1
+}
+
+# Look up the live usbguard numeric id for a device hash. Ids are recycled;
+# the hash is the stable identity.
+ug_find_id_by_hash() {
+  local want="$1" line id
+  ug_is_hash "$want" || return 1
+  while IFS= read -r line; do
+    case "$line" in
+    *"hash \"${want}\""*)
+      id="${line%%:*}"
+      id="${id//[[:space:]]/}"
+      ug_is_device_id "$id" || return 1
+      printf '%s' "$id"
+      return 0
+      ;;
+    esac
+  done < <(usbguard list-devices 2>/dev/null)
+  return 1
+}
+
+# Resolve a (possibly stale) numeric id against an optional hash.
+# Prints the id to use, or empty if the device is gone and no permanent rule
+# can be written from the hash alone.
+ug_resolve_live_id() {
+  local id="${1-}" hash="${2-}"
+  local live=""
+  if ug_is_hash "$hash"; then
+    live="$(ug_find_id_by_hash "$hash" || true)"
+    if [[ -n "$live" ]]; then
+      printf '%s' "$live"
+      return 0
+    fi
+    return 1
+  fi
+  if ug_is_device_id "$id"; then
+    printf '%s' "$id"
+    return 0
+  fi
+  return 1
+}
+
+ug_apply() {
+  local verb="$1" id="${2-}" hash="${3-}" permanent="${4:-0}"
+  case "$verb" in
+  allow | block | reject) ;;
+  *)
+    echo "ug_apply: unknown verb $verb" >&2
+    return 1
+    ;;
+  esac
+
+  local live=""
+  if live="$(ug_resolve_live_id "$id" "$hash")"; then
+    if [[ "$permanent" == "1" ]]; then
+      usbguard "${verb}-device" -p "$live"
+    else
+      usbguard "${verb}-device" "$live"
+    fi
+    return
+  fi
+
+  if [[ "$permanent" == "1" ]] && ug_is_hash "$hash" && [[ "$verb" == "allow" ]]; then
+    usbguard allow-device -p "allow hash \"${hash}\""
+    return
+  fi
+
+  echo "Device is no longer present (id=${id:-?} hash=${hash:-?})." >&2
+  return 1
+}
+
+ug_debounce() {
+  local key="$1" window_s="${2:-2}"
+  local dir="${XDG_RUNTIME_DIR:-/tmp}/omarchy-usbguard"
+  mkdir -p "$dir"
+  chmod 700 "$dir" 2>/dev/null || true
+  local file="$dir/last-${key}"
+  local now last=0
+  now="$(date +%s)"
+  if [[ -f "$file" ]]; then
+    last="$(cat "$file" 2>/dev/null || echo 0)"
+  fi
+  if ((now - last < window_s)); then
+    return 1
+  fi
+  printf '%s' "$now" >"$file"
+  return 0
+}

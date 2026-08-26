@@ -1,34 +1,101 @@
 #!/bin/bash
-# omarchy:summary=Allow an authorized USB device via USBGuard
-# omarchy:args=<device-id> [-p]
-# omarchy:examples=omarchy-usbguard-allow 14 -p
+# omarchy:summary=Sanitized helper to allow, block, or reject USB devices with hash validation
+# omarchy:args=<verb> <device-id> <device-hash> [device-name]
 
 set -euo pipefail
 
-if [[ $# -lt 1 ]]; then
-  echo "Usage: omarchy-usbguard-allow <device-id> [-p|--permanent]" >&2
+if (( $# < 3 )); then
+  echo "Usage: omarchy-usbguard-allow <allow|allow-permanent|block|reject> <device-id> <device-hash> [device-name]" >&2
   exit 1
 fi
 
-device_id="$1"
-permanent="${2:-}"
+verb="$1"
+dev_id="$2"
+dev_hash="$3"
+dev_name="${4:-USB Device}"
 
-if [[ "$permanent" == "-p" || "$permanent" == "--permanent" ]]; then
-  usbguard allow-device "$device_id" -p
+# Validate numeric device ID
+if [[ ! "$dev_id" =~ ^[0-9]+$ ]]; then
+  echo "Error: Invalid device ID '$dev_id'" >&2
+  exit 1
+fi
+
+# Verify device ID has not been recycled by validating against current device list
+current_rule=$(usbguard list-devices 2>/dev/null | grep -E "^${dev_id}:" || true)
+
+if [[ -z "$current_rule" ]]; then
   omarchy-notification-send \
-    -r 9876 \
+    -u critical \
+    -g "󰅙" \
+    --app-name "USBGuard" \
+    "Authorization Failed" \
+    "Device #${dev_id} is no longer connected."
+  exit 1
+fi
+
+# If a hash was provided, ensure it matches the connected device
+if [[ -n "$dev_hash" && "$dev_hash" != "nohash" ]]; then
+  if [[ ! "$current_rule" =~ hash\ \"${dev_hash}\" ]]; then
+    omarchy-notification-send \
+      -u critical \
+      -g "󰅙" \
+      --app-name "USBGuard" \
+      "Security Check Failed" \
+      "Device ID #${dev_id} was recycled by another hardware device."
+    exit 1
+  fi
+fi
+
+# Compute unique notification replace ID for this device
+rep_id=9876
+if [[ -n "$dev_hash" && "$dev_hash" != "nohash" ]]; then
+  hex_hash=$(printf '%s' "$dev_hash" | sha256sum | cut -c1-6)
+  rep_id=$(( 1000 + ( 16#${hex_hash} % 80000 ) ))
+fi
+
+case "$verb" in
+allow)
+  usbguard allow-device "$dev_id"
+  omarchy-notification-send \
+    -r "$rep_id" \
+    -g "󰄬" \
+    -u normal \
+    --app-name "USBGuard" \
+    "USB Device Authorized" \
+    "$dev_name temporarily authorized for this session."
+  ;;
+allow-permanent)
+  usbguard allow-device "$dev_id" -p
+  omarchy-notification-send \
+    -r "$rep_id" \
     -g "" \
     -u normal \
     --app-name "USBGuard" \
     "Trusted USB Device Saved" \
-    "Device #$device_id has been permanently added to the trusted whitelist."
-else
-  usbguard allow-device "$device_id"
+    "$dev_name added permanently to the whitelist."
+  ;;
+reject)
+  usbguard reject-device "$dev_id"
   omarchy-notification-send \
-    -r 9876 \
-    -g "󰚥" \
-    -u normal \
+    -r "$rep_id" \
+    -g "󰅙" \
+    -u low \
     --app-name "USBGuard" \
-    "USB Device Authorized" \
-    "Device #$device_id temporarily authorized for this session."
-fi
+    "USB Device Rejected" \
+    "$dev_name communication rejected and device node removed."
+  ;;
+block)
+  usbguard block-device "$dev_id"
+  omarchy-notification-send \
+    -r "$rep_id" \
+    -g "󰌾" \
+    -u low \
+    --app-name "USBGuard" \
+    "USB Device Blocked" \
+    "$dev_name remains blocked."
+  ;;
+*)
+  echo "Unknown verb: $verb" >&2
+  exit 1
+  ;;
+esac

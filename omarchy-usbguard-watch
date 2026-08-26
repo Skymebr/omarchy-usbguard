@@ -1,167 +1,18 @@
 #!/bin/bash
-# omarchy:summary=Daemon watcher for USBGuard device events with hardware resolution, debouncing, and disconnect alerts
+# omarchy:summary=USBGuard watcher daemon delegating events to omarchy-usbguard-event via -e
 
 set -euo pipefail
 
-last_notified_id=""
-last_notified_time=0
-last_remove_id=""
-last_remove_time=0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EVENT_HANDLER="${SCRIPT_DIR}/omarchy-usbguard-event"
 
-# Resolve clean hardware name using Linux USB database (lsusb)
-resolve_device_name() {
-  local vid_pid="$1"
-  local raw_name="$2"
-  local resolved=""
+if [[ ! -x "$EVENT_HANDLER" ]]; then
+  EVENT_HANDLER="$(command -v omarchy-usbguard-event || true)"
+fi
 
-  if [[ -n "$vid_pid" ]]; then
-    # Query lsusb for vendor & product name
-    resolved=$(lsusb -d "$vid_pid" 2>/dev/null | sed -E 's/.*ID [0-9a-fA-F:]+ //' | xargs || true)
-  fi
+if [[ -z "$EVENT_HANDLER" || ! -x "$EVENT_HANDLER" ]]; then
+  echo "Error: Event handler omarchy-usbguard-event not found or not executable" >&2
+  exit 1
+fi
 
-  if [[ -n "$resolved" && "$resolved" != "USB Device" && "$resolved" != "Mass Storage" ]]; then
-    echo "$resolved"
-  elif [[ -n "$raw_name" && "$raw_name" != "USB Device" && "$raw_name" != "Mass Storage" ]]; then
-    echo "$raw_name"
-  elif [[ -n "$resolved" ]]; then
-    echo "$resolved"
-  else
-    echo "${raw_name:-USB Device}"
-  fi
-}
-
-classify_device() {
-  local name="$1"
-  local iface="$2"
-
-  if [[ "$iface" =~ 08: ]] || [[ "$name" =~ (Mass|Storage|Flash|Disk|Drive|SanDisk|Kingston|Cruzer|USB|Alcor) ]]; then
-    echo "Storage|󰋊"
-  elif [[ "$name" =~ (Keyboard|Keychron) ]] || [[ "$iface" =~ 03:01:01 ]]; then
-    echo "Keyboard|"
-  elif [[ "$name" =~ Mouse ]] || [[ "$iface" =~ 03:01:02 ]]; then
-    echo "Mouse|󰍽"
-  elif [[ "$iface" =~ 03: ]]; then
-    echo "HID Device|"
-  elif [[ "$iface" =~ 01: ]] || [[ "$name" =~ (Audio|Mic|Headset|Sound) ]]; then
-    echo "Audio|󰋋"
-  elif [[ "$iface" =~ 0e: ]] || [[ "$name" =~ (Camera|Webcam|Video) ]]; then
-    echo "Camera|󰄀"
-  elif [[ "$iface" =~ 02: ]] || [[ "$name" =~ (Ethernet|Network) ]]; then
-    echo "Network|󰖩"
-  elif [[ "$iface" =~ e0: ]] || [[ "$name" =~ (Wireless|Bluetooth) ]]; then
-    echo "Bluetooth|󰂯"
-  else
-    echo "Peripheral|󰚥"
-  fi
-}
-
-current_id=""
-current_event=""
-current_target=""
-current_name=""
-current_iface=""
-current_vid_pid=""
-
-exec usbguard watch -w | while IFS= read -r line; do
-  # Track current device block
-  if [[ "$line" =~ \[device\]\ (PresenceChanged|PolicyChanged|PolicyApplied):\ id=([0-9]+) ]]; then
-    current_id="${BASH_REMATCH[2]}"
-  fi
-
-  if [[ "$line" =~ event=([a-zA-Z0-9_-]+) ]]; then
-    current_event="${BASH_REMATCH[1]}"
-  fi
-
-  if [[ "$line" =~ target=([a-zA-Z0-9_-]+) || "$line" =~ target_new=([a-zA-Z0-9_-]+) ]]; then
-    current_target="${BASH_REMATCH[1]}"
-  fi
-
-  if [[ "$line" =~ name\ \"([^\"]+)\" ]]; then
-    current_name="${BASH_REMATCH[1]}"
-  fi
-
-  if [[ "$line" =~ id\ ([0-9a-fA-F]{4}:[0-9a-fA-F]{4}) ]]; then
-    current_vid_pid="${BASH_REMATCH[1]}"
-  fi
-
-  if [[ "$line" =~ with-interface\ (\{[^\}]+\}|[0-9a-fA-F:]+) ]]; then
-    current_iface="${BASH_REMATCH[1]}"
-  fi
-
-  # Event 1: Device insertion blocked by USBGuard
-  if [[ "$line" =~ \[device\]\ PolicyApplied: ]] || [[ "$line" =~ device_rule=block && -n "$current_id" ]]; then
-    if [[ "$current_target" == "block" && "$current_event" != "Remove" && -n "$current_id" ]]; then
-      now=$(date +%s%N)
-      # Debounce: avoid firing multiple notifications within 1.5 seconds (1500000000 ns)
-      if [[ "$current_id" == "$last_notified_id" ]] && (( now - last_notified_time < 1500000000 )); then
-        continue
-      fi
-
-      last_notified_id="$current_id"
-      last_notified_time="$now"
-
-      [[ -n "$current_name" ]] || current_name="USB Device"
-
-      # Resolve accurate hardware name from Linux USB database (vendor + product)
-      display_name=$(resolve_device_name "$current_vid_pid" "$current_name")
-
-      # Classify device and pick appropriate Nerd Font icon
-      classification_info=$(classify_device "$display_name" "$current_iface")
-      dev_type="${classification_info%%|*}"
-      glyph="${classification_info##*|}"
-
-      # Format body with real newline character ($'\n')
-      body_text="${display_name} · ${dev_type}"$'\n'"Click to manage authorization."
-
-      # Send desktop notification with clean multi-line typography
-      omarchy-notification-send \
-        -r 9876 \
-        -g "$glyph" \
-        -u critical \
-        --app-name "USBGuard" \
-        "USB Device Blocked" \
-        "$body_text" \
-        --exec omarchy-usbguard-prompt "$current_id" "$display_name" "$dev_type" || true
-
-      # Reset temp state
-      current_id=""
-      current_target=""
-      current_name=""
-      current_iface=""
-      current_vid_pid=""
-      current_event=""
-    fi
-  fi
-
-  # Event 2: Device removed / disconnected
-  if [[ "$current_event" == "Remove" ]] && [[ -n "$current_id" ]]; then
-    now=$(date +%s%N)
-    if [[ "$current_id" != "$last_remove_id" ]] || (( now - last_remove_time > 1500000000 )); then
-      last_remove_id="$current_id"
-      last_remove_time="$now"
-
-      display_name=$(resolve_device_name "$current_vid_pid" "$current_name")
-      classification_info=$(classify_device "$display_name" "$current_iface")
-      dev_type="${classification_info%%|*}"
-      glyph="${classification_info##*|}"
-
-      # Send a clean, non-intrusive disconnect notification (auto-dismiss in 3s)
-      omarchy-notification-send \
-        -r 9876 \
-        -g "$glyph" \
-        -u low \
-        -t 3000 \
-        --app-name "USBGuard" \
-        "USB Device Disconnected" \
-        "${display_name} · ${dev_type}" || true
-    fi
-
-    # Reset temp state
-    current_id=""
-    current_target=""
-    current_name=""
-    current_iface=""
-    current_vid_pid=""
-    current_event=""
-  fi
-done
+exec usbguard watch -w -e "$EVENT_HANDLER"

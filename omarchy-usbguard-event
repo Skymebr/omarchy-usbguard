@@ -1,0 +1,183 @@
+#!/bin/bash
+# omarchy:summary=Per-event handler invoked by usbguard watch -w -e
+# Receives: USBGUARD_DEVICE_ID, USBGUARD_DEVICE_EVENT, USBGUARD_DEVICE_TARGET, USBGUARD_DEVICE_RULE
+
+set -euo pipefail
+
+event="${USBGUARD_DEVICE_EVENT:-}"
+dev_id="${USBGUARD_DEVICE_ID:-}"
+target="${USBGUARD_DEVICE_TARGET:-}"
+rule="${USBGUARD_DEVICE_RULE:-}"
+
+if [[ -z "$event" || -z "$dev_id" ]]; then
+  exit 0
+fi
+
+# 1. Sanitize attacker-controlled strings (strip control chars, collapse spaces, remove leading hyphens)
+sanitize_str() {
+  local raw="$1"
+  local max="${2:-64}"
+  local clean
+  clean=$(printf '%s' "$raw" | tr -d '\000-\037\177' | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//; s/^-+//')
+  if (( ${#clean} > max )); then
+    clean="${clean:0:max-1}…"
+  fi
+  printf '%s' "$clean"
+}
+
+# 2. Extract fields from device rule
+vid_pid=""
+raw_name=""
+dev_serial=""
+dev_hash=""
+dev_ifaces=""
+dev_connect_type=""
+
+if [[ "$rule" =~ id\ ([0-9a-fA-F]{4}:[0-9a-fA-F]{4}) ]]; then
+  vid_pid="${BASH_REMATCH[1]}"
+fi
+if [[ "$rule" =~ name\ \"([^\"]+)\" ]]; then
+  raw_name="${BASH_REMATCH[1]}"
+fi
+if [[ "$rule" =~ serial\ \"([^\"]+)\" ]]; then
+  dev_serial="${BASH_REMATCH[1]}"
+fi
+if [[ "$rule" =~ hash\ \"([^\"]+)\" ]]; then
+  dev_hash="${BASH_REMATCH[1]}"
+fi
+if [[ "$rule" =~ with-interface\ (\{[^\}]+\}|[0-9a-fA-F:]+) ]]; then
+  dev_ifaces="${BASH_REMATCH[1]}"
+fi
+if [[ "$rule" =~ with-connect-type\ \"([^\"]*)\" ]]; then
+  dev_connect_type="${BASH_REMATCH[1]}"
+fi
+
+# 3. Resolve hardware name from official Linux USB database (lsusb)
+resolve_name() {
+  local v_p="$1"
+  local raw="$2"
+  local resolved=""
+
+  if [[ -n "$v_p" ]]; then
+    resolved=$(lsusb -d "$v_p" 2>/dev/null | sed -E 's/.*ID [0-9a-fA-F:]+ //' | xargs || true)
+  fi
+
+  if [[ -n "$resolved" && "$resolved" != "USB Device" && "$resolved" != "Mass Storage" ]]; then
+    echo "$resolved"
+  elif [[ -n "$raw" && "$raw" != "USB Device" && "$raw" != "Mass Storage" ]]; then
+    echo "$raw"
+  elif [[ -n "$resolved" ]]; then
+    echo "$resolved"
+  else
+    echo "${raw:-USB Device}"
+  fi
+}
+
+# 4. Classify device by Interface Class codes and detect BadUSB combos
+classify_interfaces() {
+  local ifaces="$1"
+  local has_hid=0
+  local has_storage=0
+  local has_net=0
+  local has_audio=0
+  local has_video=0
+  local has_bluetooth=0
+  local is_kbd=0
+  local is_mouse=0
+
+  # Match primary class at start of descriptor (after whitespace, brace, or line start)
+  if [[ "$ifaces" =~ (^|[[:space:]\{])08: ]]; then has_storage=1; fi
+  if [[ "$ifaces" =~ (^|[[:space:]\{])03: ]]; then has_hid=1; fi
+  if [[ "$ifaces" =~ (^|[[:space:]\{])03:01:01 ]]; then is_kbd=1; fi
+  if [[ "$ifaces" =~ (^|[[:space:]\{])03:01:02 ]]; then is_mouse=1; fi
+  if [[ "$ifaces" =~ (^|[[:space:]\{])(02:|0a:) ]]; then has_net=1; fi
+  if [[ "$ifaces" =~ (^|[[:space:]\{])01: ]]; then has_audio=1; fi
+  if [[ "$ifaces" =~ (^|[[:space:]\{])(0e:|10:) ]]; then has_video=1; fi
+  if [[ "$ifaces" =~ (^|[[:space:]\{])e0: ]]; then has_bluetooth=1; fi
+
+  # 4a. BadUSB Combo Detection (Storage + HID / Storage + Network)
+  if (( has_storage && has_hid )); then
+    echo "⚠️ High-Risk BadUSB (Storage + HID)|󰚌|critical|combo"
+    return
+  fi
+  if (( has_storage && has_net )); then
+    echo "⚠️ High-Risk BadUSB (Storage + Network)|󰚌|critical|combo"
+    return
+  fi
+
+  # 4b. Single Classifications strictly by interface code
+  if (( is_kbd )); then
+    echo "Keyboard (HID)||normal|single"
+  elif (( is_mouse )); then
+    echo "Mouse (HID)|󰍽|normal|single"
+  elif (( has_hid )); then
+    echo "HID Input Device||normal|single"
+  elif (( has_storage )); then
+    echo "Mass Storage|󰋊|normal|single"
+  elif (( has_audio )); then
+    echo "Audio Device|󰋋|normal|single"
+  elif (( has_video )); then
+    echo "Camera / Video|󰄀|normal|single"
+  elif (( has_net )); then
+    echo "Network Adapter|󰖩|normal|single"
+  elif (( has_bluetooth )); then
+    echo "Bluetooth Radio|󰂯|normal|single"
+  elif [[ "$ifaces" =~ (^|[[:space:]\{])09: ]]; then
+    echo "USB Hub|󰒃|low|single"
+  else
+    echo "USB Peripheral|󰚥|normal|single"
+  fi
+}
+
+raw_display_name=$(resolve_name "$vid_pid" "$raw_name")
+clean_name=$(sanitize_str "$raw_display_name" 64)
+
+classification_info=$(classify_interfaces "$dev_ifaces")
+dev_type=$(printf '%s' "$classification_info" | cut -d'|' -f1)
+glyph=$(printf '%s' "$classification_info" | cut -d'|' -f2)
+urgency=$(printf '%s' "$classification_info" | cut -d'|' -f3)
+is_combo=$(printf '%s' "$classification_info" | cut -d'|' -f4)
+
+# 5. Generate distinct replace_id per device hash to prevent notification collisions
+rep_id=9876
+if [[ -n "$dev_hash" ]]; then
+  hex_hash=$(printf '%s' "$dev_hash" | sha256sum | cut -c1-6)
+  rep_id=$(( 1000 + ( 16#${hex_hash} % 80000 ) ))
+else
+  rep_id=$(( 1000 + ( dev_id % 1000 ) ))
+fi
+
+# 6. Event Handling
+case "$event" in
+Insert|Update)
+  if [[ "$target" == "block" || "$target" == "reject" ]]; then
+    headline="USB Device Blocked"
+    body_text="${clean_name} · ${dev_type}"$'\n'"Click to manage authorization."
+
+    if [[ "$is_combo" == "combo" ]]; then
+      headline="⚠️ High-Risk Device Blocked"
+      body_text="${clean_name} claims to be both Storage and Keyboard."$'\n'"Click to inspect or reject."
+    fi
+
+    omarchy-notification-send \
+      -r "$rep_id" \
+      -g "$glyph" \
+      -u "$urgency" \
+      --app-name "USBGuard" \
+      "$headline" \
+      "$body_text" \
+      --exec omarchy-usbguard-prompt "$dev_id" "${dev_hash:-nohash}" "$clean_name" "$dev_type" "$is_combo" || true
+  fi
+  ;;
+Remove)
+  # Low-urgency disconnect toast, replaces any pending blocked notification for this device
+  omarchy-notification-send \
+    -r "$rep_id" \
+    -g "$glyph" \
+    -u low \
+    -t 3000 \
+    --app-name "USBGuard" \
+    "USB Device Disconnected" \
+    "${clean_name} · ${dev_type}" || true
+  ;;
+esac
