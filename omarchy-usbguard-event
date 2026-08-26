@@ -150,23 +150,49 @@ fi
 # 6. Event Handling
 case "$event" in
 Insert|Update)
-  if [[ "$target" == "block" || "$target" == "reject" ]]; then
-    headline="USB Device Blocked"
-    body_text="${clean_name} · ${dev_type}"$'\n'"Click to manage authorization."
-
-    if [[ "$is_combo" == "combo" ]]; then
-      headline="⚠️ High-Risk Device Blocked"
-      body_text="${clean_name} claims to be both Storage and Keyboard."$'\n'"Click to inspect or reject."
-    fi
-
+  if [[ "$target" == "allow" ]]; then
+    # Device matched an existing allow policy rule
     omarchy-notification-send \
       -r "$rep_id" \
       -g "$glyph" \
-      -u "$urgency" \
+      -u low \
+      -t 2000 \
       --app-name "USBGuard" \
-      "$headline" \
-      "$body_text" \
-      --exec omarchy-usbguard-prompt "$dev_id" "${dev_hash:-nohash}" "$clean_name" "$dev_type" "$is_combo" || true
+      "USB Device Connected" \
+      "${clean_name} · ${dev_type}" || true
+  elif [[ "$target" == "block" || "$target" == "reject" ]]; then
+    # Short wait for policy evaluation to avoid transient probe race
+    sleep 0.08
+    active_target=$(usbguard list-devices 2>/dev/null | grep -E "^${dev_id}:" | awk '{print $2}' || true)
+    
+    if [[ "$active_target" == "allow" ]]; then
+      # Policy immediately matched and allowed the device
+      omarchy-notification-send \
+        -r "$rep_id" \
+        -g "$glyph" \
+        -u low \
+        -t 2000 \
+        --app-name "USBGuard" \
+        "USB Device Connected" \
+        "${clean_name} · ${dev_type}" || true
+    else
+      headline="USB Device Blocked"
+      body_text="${clean_name} · ${dev_type}"$'\n'"Click to manage authorization."
+
+      if [[ "$is_combo" == "combo" ]]; then
+        headline="⚠️ High-Risk Device Blocked"
+        body_text="${clean_name} claims to be both Storage and Keyboard."$'\n'"Click to inspect or reject."
+      fi
+
+      omarchy-notification-send \
+        -r "$rep_id" \
+        -g "$glyph" \
+        -u "$urgency" \
+        --app-name "USBGuard" \
+        "$headline" \
+        "$body_text" \
+        --exec omarchy-usbguard-prompt "$dev_id" "${dev_hash:-nohash}" "$clean_name" "$dev_type" "$is_combo" || true
+    fi
   fi
   ;;
 Remove)
