@@ -1,30 +1,92 @@
-# 🛡️ Omarchy USBGuard Hardware Protection
+# Omarchy USBGuard Hardware Protection
 
-Native, zero-friction USB device authorization and BadUSB mitigation framework for **[Omarchy](https://omarchy.org)** Linux.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform: Omarchy / Arch Linux](https://img.shields.io/badge/Platform-Omarchy%20%2F%20Arch%20Linux-1793D1.svg)](https://omarchy.org)
+[![Security: Kernel Level](https://img.shields.io/badge/Security-Kernel--Level-critical.svg)](https://usbguard.github.io/)
+[![Architecture: Event--Driven](https://img.shields.io/badge/Architecture-Event--Driven-success.svg)](https://github.com/Skymebr/omarchy-usbguard)
 
-Integrates enterprise-grade hardware authorization via **USBGuard** directly into the **Quickshell / Omarchy Shell** desktop environment.
+A zero-friction, kernel-level USB device authorization and BadUSB mitigation suite for the **[Omarchy](https://omarchy.org)** Linux environment.
 
----
-
-## ✨ Key Features & Architecture
-
-- **Block-by-Default Kernel Protection:** Automatically isolates unknown USB peripherals at the Linux Kernel level before drivers are bound.
-- **BadUSB & Keystroke Injection Inspection:** Inspects interface descriptor combinations to detect malicious composite devices (e.g. devices claiming to be both Mass Storage `08:` and Keyboard/HID `03:`).
-- **Event-Driven Daemon (`usbguard watch -e`):** Zero regex stdout parsing. Uses the native USBGuard event execution hook with structured environment variables.
-- **Dynamic Hash-Based Notification IDs:** Computes notification replace IDs per device hash, preventing multi-device collisions and toast overwrites.
-- **Input Sanitization:** Strips control characters, collapses whitespace, and removes leading hyphens to prevent argument injection attacks from attacker-controlled `iProduct` strings.
-- **Hardware Name Resolution:** Queries the official Linux USB hardware database (`lsusb`) to resolve real vendor and model names (e.g. `Alcor Micro Corp. Flash Drive` instead of generic `Mass Storage`).
-- **Interactive Quickshell Menu (`omarchy-menu-select`):** 
-  - 󰋊 **Allow for this session only** *(Temporary access until unplugged)*
-  -  **Trust permanently** *(Appends signature to `/etc/usbguard/rules.conf`)*
-  - 󰅙 **Reject device** *(Unbinds communication and removes device node in kernel)*
-  - 󰌾 **Keep blocked** *(No change)*
-- **Anti-Lockout Baseline Setup:** Automatically whitelists internal `hardwired` peripherals (webcams, Bluetooth, fingerprint sensors) and configures `PresentDevicePolicy=keep`.
-- **Safe Rollback & Policy Regeneration:** Supports `--remove` for clean 1-command uninstall and `--regenerate-policy` with automatic timestamped backups.
+This project bridges **USBGuard** hardware authorization with the native **Quickshell / Omarchy Shell** desktop layer, providing block-by-default physical port security without interrupting standard developer workflows.
 
 ---
 
-## 🚀 Quick Install
+## Threat Model and Protection Scope
+
+Linux systems by default automatically probe, enumerate, and bind kernel drivers to any USB device connected to a physical port. This creates distinct attack surfaces that `omarchy-usbguard` actively mitigates:
+
+1. **BadUSB / Keystroke Injection Attacks (HID Spoofing):**
+   Malicious microcontrollers (e.g., Rubber Ducky, MalDuino) disguised as standard mass storage drives or charging cables that register as high-speed keyboards to execute arbitrary shell commands.
+2. **Rogue Network Interfaces:**
+   Composite USB devices that advertise CDC/Ethernet or RNDIS interfaces to hijack local network routes and perform DHCP/DNS spoofing.
+3. **Firmware Descriptor Exploits:**
+   Malicious USB descriptors designed to trigger kernel heap/buffer overflows in legacy USB class drivers prior to user login.
+
+---
+
+## Architecture and Execution Flow
+
+```
+[ Physical USB Connection ]
+            │
+            ▼
+[ Linux Kernel USB Core ] ─── (authorized = 0)
+            │
+            ▼
+[ usbguard-daemon (IPC) ]
+            │
+            ▼ (via native -e event hook)
+[ omarchy-usbguard-event ]
+            │
+    ├── 1. Interface Class Inspection (Storage 08h, HID 03h, Net 02h)
+    ├── 2. BadUSB Composite Detection (Storage + HID combo inspection)
+    ├── 3. Attacker String Sanitization (C0 strip, dash removal, length cap)
+    ├── 4. Hardware Name Resolution (lsusb / hwdata lookup)
+    └── 5. Dynamic Hash Replace ID Generation (SHA-256 slice)
+            │
+            ▼
+[ Quickshell Desktop Notification (omarchy-notification-send) ]
+            │
+            ├── Right-Click: Dismiss (Keep blocked)
+            └── Left-Click: Open Selection Modal (omarchy-menu-select)
+                     │
+                     ├── Allow for this session only (usbguard allow-device <id>)
+                     ├── Trust permanently (usbguard allow-device <id> -p)
+                     ├── Reject device (usbguard reject-device <id>)
+                     └── Keep blocked (usbguard block-device <id>)
+```
+
+---
+
+## Key Technical Implementations
+
+### 1. Interface-Driven Classification (Anti-Spoofing)
+Device categorization is performed strictly via 2-digit hexadecimal USB interface class codes (`08:` for Mass Storage, `03:01:01` for Boot Keyboard, `03:01:02` for Boot Mouse, `02:`/`0a:` for CDC Network, `01:` for Audio, `0e:`/`10:` for Video, `e0:` for Wireless/Bluetooth). Firmware-provided device strings (`iProduct`) are treated as untrusted and never used for security classification.
+
+### 2. BadUSB Composite Inspection
+If a single physical device descriptor advertises both Mass Storage (`08:`) and Human Interface Device (`03:`) interfaces, the event processor flags it as a high-risk BadUSB candidate, escalating notification urgency and prompting the user with an explicit security warning.
+
+### 3. Native Event Hook (`usbguard watch -e`)
+Eliminates brittle multiline stdout terminal scraping. The watcher runs `usbguard watch -w -e omarchy-usbguard-event`, receiving structured environment variables (`USBGUARD_DEVICE_ID`, `USBGUARD_DEVICE_EVENT`, `USBGUARD_DEVICE_TARGET`, `USBGUARD_DEVICE_RULE`) directly from the IPC bus.
+
+### 4. Input Sanitization
+Firmware strings (`iProduct`, `iSerial`) are sanitized before being passed to desktop notification APIs:
+* Strips ASCII control characters (`\x00-\x1f\x7f`).
+* Collapses sequential whitespace.
+* Removes leading hyphens to prevent CLI argument injection (e.g. `--exec`).
+* Enforces bounded string length limits.
+
+### 5. Hardware Hash Validation and Dynamic Notification IDs
+* **ID Recycling Protection:** `omarchy-usbguard-allow` validates the target device ID and its SHA-256 descriptor hash against the live daemon device table before applying allow/reject commands.
+* **Notification Collision Prevention:** Generates unique notification replace IDs derived from the hardware descriptor hash, ensuring concurrent USB insertions do not overwrite one another.
+
+### 6. Anti-Lockout Baseline Setup
+* Automatically injects `allow with-connect-type "hardwired"` at the top of the ruleset to ensure internal webcams, onboard Bluetooth radios, and fingerprint readers are never locked out.
+* Configures `PresentDevicePolicy=keep` in `/etc/usbguard/usbguard-daemon.conf` to prevent active hardware drops during daemon restarts.
+
+---
+
+## Installation
 
 Clone the repository and run the setup wizard:
 
@@ -34,57 +96,72 @@ cd omarchy-usbguard
 ./omarchy-setup-security-usbguard
 ```
 
-The installer will:
-1. Display a prominent confirmation banner warning to keep your keyboard and mouse plugged in.
-2. Install `usbguard` via `pacman` if not present.
-3. Automatically auto-allow internal `hardwired` hardware and generate a baseline policy.
-4. Configure non-root IPC permissions specifically for your user.
-5. Enable and start the system daemon and user-space Quickshell notification watcher.
+### Installation Flags
+
+| Flag | Description |
+| :--- | :--- |
+| `-y, --yes` | Skip the interactive confirmation prompt (useful for automated scripts). |
+| `--regenerate-policy` | Rebuild `/etc/usbguard/rules.conf` from currently attached hardware, saving a timestamped backup. |
+| `--user <username>` | Explicitly specify the non-root user authorized for IPC access. |
+| `--remove` | Perform a complete, clean rollback and uninstall. |
 
 ---
 
-## 🛠️ Usage
+## Component Reference
 
-### When a new USB device is connected:
-1. The device is blocked immediately by the Kernel.
-2. Omarchy Shell displays a notification toast with the device icon and resolved vendor name:
-   ```text
-   󰋊 USB Device Blocked
-      Alcor Micro Corp. Flash Drive · Mass Storage
-      Click to manage authorization.
+| File | Purpose |
+| :--- | :--- |
+| `omarchy-setup-security-usbguard` | Installation wizard, policy generator, and rollback manager. |
+| `omarchy-setup-usbguard` | Compatibility symlink mapping to setup wizard. |
+| `omarchy-usbguard-watch` | Background systemd service wrapper invoking event delegation. |
+| `omarchy-usbguard-event` | Structured event handler executing classification, sanitization, and desktop notifications. |
+| `omarchy-usbguard-prompt` | Interactive Quickshell menu interface (`omarchy-menu-select`). |
+| `omarchy-usbguard-allow` | Hash-validated authorization execution helper. |
+
+---
+
+## Policy Management and Rollback
+
+### Rebuilding Policy for New Hardware
+When permanently attaching new desktop peripherals (e.g., a new docking station or external keyboard):
+
+```bash
+omarchy-setup-security-usbguard --regenerate-policy
+```
+
+### Clean Uninstallation
+To cleanly disable USBGuard, remove systemd units, restore configuration backups, and purge installed binaries:
+
+```bash
+omarchy-setup-security-usbguard --remove
+```
+
+---
+
+## Verification and Testing
+
+1. Verify that both system and user services are active:
+   ```bash
+   systemctl is-active usbguard.service
+   systemctl --user is-active omarchy-usbguard-notify.service
    ```
-3. **Click the notification** to open the interactive selection menu.
-4. **Right-click the notification** to dismiss it without action.
-
-### Rebuilding Baseline Policy
-If you attach a permanent new dock or keyboard that you want included in the baseline:
-```bash
-./omarchy-setup-security-usbguard --regenerate-policy
-```
-
-### Uninstallation / Rollback
-To disable USBGuard and cleanly remove all user notification services and binaries:
-```bash
-./omarchy-setup-security-usbguard --remove
-```
+2. Inspect the active baseline rules:
+   ```bash
+   usbguard list-rules
+   ```
+3. Connect an unauthorized USB storage drive:
+   * A desktop notification will appear detailing the resolved vendor and interface class.
+   * Clicking the toast presents authorization choices.
+   * Disconnecting the drive safely triggers an auto-dismissing disconnect notice.
 
 ---
 
-## 🏗️ File Structure
+## Security Policy
 
-```
-omarchy-usbguard/
-├── omarchy-setup-security-usbguard  # Automated installation, regeneration & rollback wizard
-├── omarchy-setup-usbguard           # Symlink for backward compatibility
-├── omarchy-usbguard-watch           # Lightweight daemon delegating to event handler
-├── omarchy-usbguard-event           # Per-event handler (sanitization, BadUSB check, notifications)
-├── omarchy-usbguard-prompt          # Interactive Quickshell modal selector
-├── omarchy-usbguard-allow           # Hash-validated authorization helper
-└── README.md
-```
+For vulnerability reporting guidelines, see [SECURITY.md](SECURITY.md).
 
 ---
 
-## 📄 License
+## License
 
-MIT License. Open source and free for the Omarchy community.
+This project is licensed under the terms of the [MIT License](LICENSE).
