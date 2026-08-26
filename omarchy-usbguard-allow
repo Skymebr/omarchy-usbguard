@@ -33,9 +33,9 @@ if [[ -z "$current_rule" ]]; then
   exit 1
 fi
 
-# If a hash was provided, ensure it matches the connected device
+# If a hash was provided, ensure it matches the connected device (using glob to safely handle base64 '+' and '/')
 if [[ -n "$dev_hash" && "$dev_hash" != "nohash" ]]; then
-  if [[ ! "$current_rule" =~ hash\ \"${dev_hash}\" ]]; then
+  if [[ "$current_rule" != *"hash \"${dev_hash}\""* ]]; then
     omarchy-notification-send \
       -u critical \
       -g "󰅙" \
