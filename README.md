@@ -117,6 +117,7 @@ cd omarchy-usbguard
 | `omarchy-usbguard-event` | Structured event handler executing classification, sanitization, and desktop notifications. |
 | `omarchy-usbguard-prompt` | Interactive Quickshell menu interface (`omarchy-menu-select`). |
 | `omarchy-usbguard-allow` | Hash-validated authorization execution helper. |
+| `omarchy-usbguard-manage` | Zero-friction trusted device revocation and whitelist manager. |
 
 ---
 

@@ -86,6 +86,7 @@ if (( REMOVE )); then
         "${USER_BIN_DIR}/omarchy-usbguard-event" \
         "${USER_BIN_DIR}/omarchy-usbguard-prompt" \
         "${USER_BIN_DIR}/omarchy-usbguard-allow" \
+        "${USER_BIN_DIR}/omarchy-usbguard-manage" \
         "${USER_BIN_DIR}/omarchy-setup-security-usbguard" \
         "${USER_BIN_DIR}/omarchy-setup-usbguard"
 
@@ -156,6 +157,7 @@ cp -f "${SCRIPT_DIR}/omarchy-usbguard-watch" "${USER_BIN_DIR}/"
 cp -f "${SCRIPT_DIR}/omarchy-usbguard-event" "${USER_BIN_DIR}/"
 cp -f "${SCRIPT_DIR}/omarchy-usbguard-prompt" "${USER_BIN_DIR}/"
 cp -f "${SCRIPT_DIR}/omarchy-usbguard-allow" "${USER_BIN_DIR}/"
+cp -f "${SCRIPT_DIR}/omarchy-usbguard-manage" "${USER_BIN_DIR}/"
 cp -f "${SCRIPT_DIR}/omarchy-setup-security-usbguard" "${USER_BIN_DIR}/"
 ln -sf "${USER_BIN_DIR}/omarchy-setup-security-usbguard" "${USER_BIN_DIR}/omarchy-setup-usbguard"
 chmod +x "${USER_BIN_DIR}"/omarchy-usbguard-* "${USER_BIN_DIR}"/omarchy-setup-*

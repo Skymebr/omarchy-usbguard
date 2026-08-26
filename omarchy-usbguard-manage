@@ -1,0 +1,171 @@
+#!/bin/bash
+# omarchy:summary=Zero-friction manager to review and revoke trusted USB devices via Quickshell Menu
+# omarchy:args=[target-device-hash]
+
+set -euo pipefail
+
+target_hash="${1:-}"
+
+# Resolve clean hardware name using Linux USB database (lsusb)
+resolve_name() {
+  local v_p="$1"
+  local raw="$2"
+  local resolved=""
+
+  if [[ -n "$v_p" ]]; then
+    resolved=$(lsusb -d "$v_p" 2>/dev/null | sed -E 's/.*ID [0-9a-fA-F:]+ //' | xargs || true)
+  fi
+
+  if [[ -n "$resolved" && "$resolved" != "USB Device" && "$resolved" != "Mass Storage" ]]; then
+    echo "$resolved"
+  elif [[ -n "$raw" && "$raw" != "USB Device" && "$raw" != "Mass Storage" ]]; then
+    echo "$raw"
+  elif [[ -n "$resolved" ]]; then
+    echo "$resolved"
+  else
+    echo "${raw:-USB Device}"
+  fi
+}
+
+# If invoked for a specific connected device hash
+if [[ -n "$target_hash" ]]; then
+  # Find rule matching target hash
+  rule_line=$(usbguard list-rules 2>/dev/null | grep -F "hash \"$target_hash\"" | head -n1 || true)
+  
+  if [[ -z "$rule_line" ]]; then
+    omarchy-notification-send \
+      -u low \
+      -g "󰌾" \
+      --app-name "USBGuard" \
+      "Device Not in Whitelist" \
+      "This device is currently authorized for this session only."
+    exit 0
+  fi
+
+  rule_id=$(printf '%s' "$rule_line" | cut -d':' -f1)
+  vid_pid=""
+  raw_name=""
+  if [[ "$rule_line" =~ id\ ([0-9a-fA-F]{4}:[0-9a-fA-F]{4}) ]]; then
+    vid_pid="${BASH_REMATCH[1]}"
+  fi
+  if [[ "$rule_line" =~ name\ \"([^\"]+)\" ]]; then
+    raw_name="${BASH_REMATCH[1]}"
+  fi
+
+  display_name=$(resolve_name "$vid_pid" "$raw_name")
+
+  opt_revoke=$'󰅙\tRevoke permanent trust\tRemove device signature from whitelist'
+  opt_block=$'󰌾\tBlock for this session\tKeep device blocked until unplugged'
+  opt_keep=$'\tKeep trusted\tMake no changes'
+
+  chosen=$(omarchy-menu-select "Manage: $display_name" \
+    "$opt_revoke" \
+    "$opt_block" \
+    "$opt_keep" \
+    -- --width 580 2>/dev/null || true)
+
+  case "$chosen" in
+  *"Revoke permanent trust"*)
+    usbguard remove-rule "$rule_id"
+    # Find currently connected device ID matching hash and block it
+    active_dev_id=$(usbguard list-devices 2>/dev/null | grep -F "hash \"$target_hash\"" | cut -d':' -f1 | head -n1 || true)
+    if [[ -n "$active_dev_id" ]]; then
+      usbguard block-device "$active_dev_id" 2>/dev/null || true
+    fi
+    omarchy-notification-send \
+      -g "󰅙" \
+      -u normal \
+      --app-name "USBGuard" \
+      "Trust Revoked" \
+      "$display_name was removed from the whitelist."
+    ;;
+  *"Block for this session"*)
+    active_dev_id=$(usbguard list-devices 2>/dev/null | grep -F "hash \"$target_hash\"" | cut -d':' -f1 | head -n1 || true)
+    if [[ -n "$active_dev_id" ]]; then
+      usbguard block-device "$active_dev_id" 2>/dev/null || true
+    fi
+    omarchy-notification-send \
+      -g "󰌾" \
+      -u low \
+      --app-name "USBGuard" \
+      "USB Device Blocked" \
+      "$display_name blocked for this session."
+    ;;
+  esac
+  exit 0
+fi
+
+# General Manager: List all whitelisted devices
+menu_options=()
+declare -A rule_map
+
+while IFS= read -r line; do
+  [[ -n "$line" ]] || continue
+  
+  # Skip controllers and hardwired baseline
+  if [[ "$line" =~ "Host Controller" ]] || [[ "$line" =~ with-connect-type\ \"hardwired\" ]]; then
+    continue
+  fi
+
+  rule_id=$(printf '%s' "$line" | cut -d':' -f1)
+  vid_pid=""
+  raw_name=""
+  rule_hash=""
+  
+  if [[ "$line" =~ id\ ([0-9a-fA-F]{4}:[0-9a-fA-F]{4}) ]]; then
+    vid_pid="${BASH_REMATCH[1]}"
+  fi
+  if [[ "$line" =~ name\ \"([^\"]+)\" ]]; then
+    raw_name="${BASH_REMATCH[1]}"
+  fi
+  if [[ "$line" =~ hash\ \"([^\"]+)\" ]]; then
+    rule_hash="${BASH_REMATCH[1]}"
+  fi
+
+  d_name=$(resolve_name "$vid_pid" "$raw_name")
+  
+  opt_entry="󰅙"$'\t'"Revoke: ${d_name}"$'\t'"Rule #${rule_id} · ID: ${vid_pid:-Unknown}"
+  menu_options+=("$opt_entry")
+  rule_map["Revoke: ${d_name}"]="$rule_id|$rule_hash|$d_name"
+done < <(usbguard list-rules 2>/dev/null)
+
+if (( ${#menu_options[@]} == 0 )); then
+  omarchy-notification-send \
+    -u low \
+    -g "󰌾" \
+    --app-name "USBGuard" \
+    "No Trusted Devices" \
+    "Your whitelist contains only native baseline hardware."
+  exit 0
+fi
+
+chosen=$(omarchy-menu-select "Revoke Trusted USB Devices" \
+  "${menu_options[@]}" \
+  -- --width 600 2>/dev/null || true)
+
+if [[ -n "$chosen" ]]; then
+  selected_label=$(printf '%s' "$chosen" | cut -d$'\t' -f1)
+  data="${rule_map["$selected_label"]:-}"
+  
+  if [[ -n "$data" ]]; then
+    r_id=$(printf '%s' "$data" | cut -d'|' -f1)
+    r_hash=$(printf '%s' "$data" | cut -d'|' -f2)
+    dev_title=$(printf '%s' "$data" | cut -d'|' -f3)
+
+    usbguard remove-rule "$r_id"
+    
+    if [[ -n "$r_hash" ]]; then
+      active_id=$(usbguard list-devices 2>/dev/null | grep -F "hash \"$r_hash\"" | cut -d':' -f1 | head -n1 || true)
+      if [[ -n "$active_id" ]]; then
+        usbguard block-device "$active_id" 2>/dev/null || true
+      fi
+    fi
+
+    omarchy-notification-send \
+      -g "󰅙" \
+      -u normal \
+      --app-name "USBGuard" \
+      "Trust Revoked" \
+      "$dev_title was removed from the whitelist."
+  fi
+fi

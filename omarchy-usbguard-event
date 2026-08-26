@@ -151,15 +151,16 @@ fi
 case "$event" in
 Insert|Update)
   if [[ "$target" == "allow" ]]; then
-    # Device matched an existing allow policy rule
+    # Device matched an existing allow policy rule (Click to revoke or manage)
     omarchy-notification-send \
       -r "$rep_id" \
       -g "$glyph" \
       -u low \
-      -t 2000 \
+      -t 4000 \
       --app-name "USBGuard" \
       "USB Device Connected" \
-      "${clean_name} · ${dev_type}" || true
+      "${clean_name} · ${dev_type}"$'\n'"Click to manage or revoke trust." \
+      --exec omarchy-usbguard-manage "${dev_hash:-}" || true
   elif [[ "$target" == "block" || "$target" == "reject" ]]; then
     # Short wait for policy evaluation to avoid transient probe race
     sleep 0.08
@@ -171,10 +172,11 @@ Insert|Update)
         -r "$rep_id" \
         -g "$glyph" \
         -u low \
-        -t 2000 \
+        -t 4000 \
         --app-name "USBGuard" \
         "USB Device Connected" \
-        "${clean_name} · ${dev_type}" || true
+        "${clean_name} · ${dev_type}"$'\n'"Click to manage or revoke trust." \
+        --exec omarchy-usbguard-manage "${dev_hash:-}" || true
     else
       headline="USB Device Blocked"
       body_text="${clean_name} · ${dev_type}"$'\n'"Click to manage authorization."
