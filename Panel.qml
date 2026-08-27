@@ -513,29 +513,29 @@ Panel {
         PanelSeparator {}
 
         // 6. Footer
-        Row {
+        RowLayout {
           width: parent.width
+          spacing: Style.space(8)
 
           Text {
             text: root.daemonActive ? "󰕥 Hardware Protection Active" : "󰅖 usbguard.service is stopped"
             color: root.daemonActive ? Color.muted : Color.urgent
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
-            anchors.verticalCenter: parent.verticalCenter
+            Layout.alignment: Qt.AlignVCenter
           }
 
           Item {
             Layout.fillWidth: true
-            width: Math.max(0, parent.width - parent.children[0].implicitWidth - footerBtn.implicitWidth - Style.space(8))
-            height: 1
           }
 
           Button {
             id: footerBtn
             text: "Setup Wizard"
             fontSize: Style.font.caption
+            Layout.alignment: Qt.AlignVCenter
             onClicked: {
-              Process.execDetached(["omarchy-launch-terminal", "--", "omarchy-setup-security-usbguard"])
+              Quickshell.execDetached(["omarchy-launch-terminal", "omarchy-setup-security-usbguard"])
             }
           }
         }
