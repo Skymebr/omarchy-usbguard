@@ -128,7 +128,7 @@ cd omarchy-usbguard
 | :--- | :--- |
 | `manifest.json` | Omarchy Shell plugin manifest defining bar widget and settings schema. |
 | `Panel.qml` | Quickshell bar widget and interactive control panel flyout. |
-| `Model.js` | Parser and classifier for USB device classes, heuristics, and rules. |
+| `backend.py` | High-speed hardware name resolver, BadUSB inspector, and JSON formatter. |
 | `omarchy-setup-security-usbguard` | Installation wizard, policy generator, and rollback manager. |
 | `omarchy-setup-usbguard` | Compatibility symlink mapping to setup wizard. |
 | `omarchy-usbguard-watch` | Background systemd service wrapper invoking event delegation. |

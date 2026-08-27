@@ -5,7 +5,6 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
-import "Model.js" as Model
 
 Panel {
   id: root
@@ -13,31 +12,32 @@ Panel {
   ipcTarget: "io.github.skymebr.usbguard"
   manageIpc: false
 
+  readonly property string backendScript: Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.skymebr.usbguard/backend.py"
+
   property bool daemonActive: false
+  property bool isInstalled: true
+  property bool needsSetup: false
+  property int blockedCount: 0
+  property int badUsbCount: 0
+  property int visibleCount: 0
+  property var devices: []
+  property var rules: []
+
   property string currentTab: "devices" // "devices" | "rules"
-  property string rawDevicesOutput: ""
-  property string rawRulesOutput: ""
 
   readonly property bool hideHubs: setting("hideHubs", true) === true
   readonly property bool showBlockedBadge: setting("showBlockedBadge", true) === true
 
-  readonly property var devices: Model.parseDevices(rawDevicesOutput)
-  readonly property var rules: Model.parseRules(rawRulesOutput)
-
   readonly property var visibleDevices: devices.filter(function(d) {
-    return !root.hideHubs || !d.isHub
+    return !root.hideHubs || !d.is_hub
   })
 
   readonly property var blockedDevices: visibleDevices.filter(function(d) {
-    return d.isBlocked
+    return d.is_blocked
   })
 
-  readonly property var badUsbDevices: visibleDevices.filter(function(d) {
-    return d.isBadUsb
-  })
-
-  readonly property bool hasBlocked: blockedDevices.length > 0
-  readonly property bool hasBadUsb: badUsbDevices.length > 0
+  readonly property bool hasBlocked: blockedCount > 0
+  readonly property bool hasBadUsb: badUsbCount > 0
 
   readonly property string barIcon: {
     if (!daemonActive) return "󰅖"
@@ -53,41 +53,31 @@ Panel {
   }
 
   function refresh() {
-    if (!statusProc.running) {
-      statusProc.command = ["systemctl", "is-active", "usbguard.service"]
-      statusProc.running = true
-    }
-    if (!devicesProc.running) {
-      devicesProc.command = ["usbguard", "list-devices"]
-      devicesProc.running = true
-    }
-    if (!rulesProc.running) {
-      rulesProc.command = ["usbguard", "list-rules"]
-      rulesProc.running = true
+    if (!queryProc.running) {
+      queryProc.running = true
     }
   }
 
   function allowDevice(devId, permanent) {
     if (!devId) return
-    var cmd = permanent
-      ? ["usbguard", "allow-device", String(devId), "-p"]
-      : ["usbguard", "allow-device", String(devId)]
-    runAction(cmd)
+    var args = ["python3", backendScript, "--allow", String(devId)]
+    if (permanent) args.push("--permanent")
+    runAction(args)
   }
 
   function blockDevice(devId) {
     if (!devId) return
-    runAction(["usbguard", "block-device", String(devId)])
+    runAction(["python3", backendScript, "--block", String(devId)])
   }
 
   function rejectDevice(devId) {
     if (!devId) return
-    runAction(["usbguard", "reject-device", String(devId)])
+    runAction(["python3", backendScript, "--reject", String(devId)])
   }
 
   function removeRule(ruleId) {
     if (!ruleId) return
-    runAction(["usbguard", "remove-rule", String(ruleId)])
+    runAction(["python3", backendScript, "--remove-rule", String(ruleId)])
   }
 
   function runAction(cmd) {
@@ -98,31 +88,22 @@ Panel {
   Component.onCompleted: refresh()
 
   Process {
-    id: statusProc
+    id: queryProc
+    command: ["python3", root.backendScript, "--status"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        root.daemonActive = (text || "").trim() === "active"
-      }
-    }
-  }
-
-  Process {
-    id: devicesProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.rawDevicesOutput = text || ""
-      }
-    }
-  }
-
-  Process {
-    id: rulesProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        root.rawRulesOutput = text || ""
+        try {
+          var data = JSON.parse(text || "{}")
+          root.daemonActive = data.daemon_active === true
+          root.isInstalled = data.installed !== false
+          root.needsSetup = data.needs_setup === true
+          root.devices = data.devices || []
+          root.rules = data.rules || []
+          root.blockedCount = data.blocked_count || 0
+          root.badUsbCount = data.badusb_count || 0
+          root.visibleCount = data.visible_count || 0
+        } catch (e) {}
       }
     }
   }
@@ -151,13 +132,13 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: root.hasBlocked && root.showBlockedBadge && !vertical
-      ? root.barIcon + " " + root.blockedDevices.length
+      ? root.barIcon + " " + root.blockedCount
       : root.barIcon
     slotSize: Style.bar.iconSlot * (root.hasBlocked && root.showBlockedBadge && !vertical ? 1.7 : 1)
     tooltipText: root.daemonActive
       ? (root.hasBlocked
-          ? root.blockedDevices.length + " USB device(s) blocked!"
-          : "USBGuard: Protected (" + root.visibleDevices.length + " devices)")
+          ? root.blockedCount + " USB device(s) blocked!"
+          : "USBGuard: Protected (" + root.visibleCount + " devices)")
       : "USBGuard: Service Inactive"
     onPressed: function(b) {
       if (b === Qt.RightButton) root.refresh()
@@ -191,13 +172,15 @@ Panel {
         // 1. Hero Header
         PanelHero {
           title: "USBGuard"
-          meta: root.daemonActive
-            ? (root.hasBadUsb ? "BADUSB THREAT DETECTED" : (root.hasBlocked ? root.blockedDevices.length + " BLOCKED DEVICE(S)" : root.visibleDevices.length + " CONNECTED"))
-            : "SERVICE INACTIVE"
+          meta: root.needsSetup
+            ? "INITIALIZATION REQUIRED"
+            : (root.daemonActive
+                ? (root.hasBadUsb ? "BADUSB THREAT DETECTED" : (root.hasBlocked ? root.blockedCount + " BLOCKED DEVICE(S)" : root.visibleCount + " CONNECTED"))
+                : "SERVICE INACTIVE")
           iconComponent: Component {
             Text {
-              text: root.hasBadUsb ? "󰕤" : (root.hasBlocked ? "󰌾" : "󰕥")
-              color: root.hasBadUsb || root.hasBlocked ? Color.urgent : (root.daemonActive ? Color.accent : Color.muted)
+              text: root.hasBadUsb ? "󰕤" : (root.hasBlocked ? "󰌾" : (root.needsSetup ? "󰕤" : "󰕥"))
+              color: root.hasBadUsb || root.hasBlocked || root.needsSetup ? Color.urgent : (root.daemonActive ? Color.accent : Color.muted)
               font.family: Style.font.family
               font.pixelSize: Style.font.display
             }
@@ -213,11 +196,56 @@ Panel {
 
         PanelSeparator {}
 
-        // 2. Alert Banner for Blocked / BadUSB Devices
+        // 2. Onboarding / Setup Banner (For fresh installs by other users)
+        BorderSurface {
+          width: parent.width
+          visible: root.needsSetup || !root.daemonActive
+          implicitHeight: setupCol.implicitHeight + Style.space(16)
+          color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.08)
+          borderSpec: Border.controlSpec("normal", Color.foreground, Color.accent)
+          radius: Style.cornerRadius
+
+          Column {
+            id: setupCol
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Style.space(12)
+            spacing: Style.space(10)
+
+            Text {
+              text: "Enable Hardware Protection"
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
+
+            Text {
+              text: "Protect against BadUSB attacks and auto-allow your internal motherboard hardware (webcam, bluetooth, keyboard)."
+              color: Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+              width: parent.width
+            }
+
+            Button {
+              text: "🛡️ Run Security Setup"
+              fontSize: Style.font.bodySmall
+              selected: true
+              onClicked: {
+                Util.execDetached("omarchy-launch-terminal omarchy-setup-security-usbguard")
+              }
+            }
+          }
+        }
+
+        // 3. Action Required Alert for Blocked / BadUSB Devices
         Column {
           width: parent.width
           spacing: Style.space(8)
-          visible: root.hasBlocked
+          visible: root.hasBlocked && !root.needsSetup
 
           PanelSectionHeader {
             text: "ACTION REQUIRED"
@@ -269,7 +297,7 @@ Panel {
                     }
 
                     Text {
-                      text: modelData.typeLabel + " · ID " + modelData.id + " (" + modelData.vidPid + ")"
+                      text: modelData.type_label + " · ID " + modelData.id + " (" + modelData.vid_pid + ")"
                       color: Color.urgent
                       font.family: Style.font.family
                       font.pixelSize: Style.font.caption
@@ -307,13 +335,14 @@ Panel {
           }
         }
 
-        // 3. Tabs
+        // 4. Tabs
         Row {
           width: parent.width
           spacing: Style.space(6)
+          visible: !root.needsSetup
 
           Button {
-            text: "Connected (" + root.visibleDevices.length + ")"
+            text: "Connected (" + root.visibleCount + ")"
             selected: root.currentTab === "devices"
             onClicked: root.currentTab = "devices"
           }
@@ -325,14 +354,14 @@ Panel {
           }
         }
 
-        // 4. Connected Devices
+        // 5. Tab 1: Connected Devices
         Column {
           width: parent.width
           spacing: Style.space(6)
-          visible: root.currentTab === "devices"
+          visible: root.currentTab === "devices" && !root.needsSetup
 
           Text {
-            visible: root.visibleDevices.length === 0
+            visible: root.visibleCount === 0
             text: "No USB devices connected."
             color: Color.muted
             font.family: Style.font.family
@@ -347,7 +376,7 @@ Panel {
             delegate: BorderSurface {
               width: parent.width
               implicitHeight: devRow.implicitHeight + Style.space(14)
-              color: modelData.isBlocked
+              color: modelData.is_blocked
                 ? Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.10)
                 : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.03)
               radius: Style.cornerRadius
@@ -364,7 +393,7 @@ Panel {
 
                 Text {
                   text: modelData.icon
-                  color: modelData.isBlocked ? Color.urgent : (modelData.isHardwired ? Color.muted : Color.accent)
+                  color: modelData.is_blocked ? Color.urgent : (modelData.is_internal ? Color.muted : Color.accent)
                   font.family: Style.font.family
                   font.pixelSize: Style.font.title
                   anchors.verticalCenter: parent.verticalCenter
@@ -386,7 +415,7 @@ Panel {
                   }
 
                   Text {
-                    text: modelData.typeLabel + " · " + (modelData.isHardwired ? "Internal Hardware" : "Port " + modelData.viaPort)
+                    text: modelData.type_label + " · " + (modelData.is_internal ? "Internal Hardware" : "Port " + modelData.port)
                     color: Color.muted
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
@@ -400,14 +429,14 @@ Panel {
                   spacing: Style.space(4)
 
                   Button {
-                    visible: modelData.isAllowed && !modelData.isHardwired
+                    visible: modelData.is_allowed && !modelData.is_internal
                     text: "Block"
                     fontSize: Style.font.caption
                     onClicked: root.blockDevice(modelData.id)
                   }
 
                   Button {
-                    visible: modelData.isBlocked
+                    visible: modelData.is_blocked
                     text: "Allow"
                     fontSize: Style.font.caption
                     selected: true
@@ -415,7 +444,7 @@ Panel {
                   }
 
                   Text {
-                    visible: modelData.isHardwired
+                    visible: modelData.is_internal
                     text: "Internal"
                     color: Color.muted
                     font.family: Style.font.family
@@ -428,11 +457,11 @@ Panel {
           }
         }
 
-        // 5. Whitelist Rules
+        // 6. Tab 2: Whitelist Rules
         Column {
           width: parent.width
           spacing: Style.space(6)
-          visible: root.currentTab === "rules"
+          visible: root.currentTab === "rules" && !root.needsSetup
 
           Text {
             visible: root.rules.length === 0
@@ -465,7 +494,7 @@ Panel {
 
                 Text {
                   text: modelData.icon || "󰕥"
-                  color: modelData.isHardwired ? Color.muted : Color.accent
+                  color: modelData.is_internal ? Color.muted : Color.accent
                   font.family: Style.font.family
                   font.pixelSize: Style.font.title
                   anchors.verticalCenter: parent.verticalCenter
@@ -487,7 +516,7 @@ Panel {
                   }
 
                   Text {
-                    text: modelData.subtitle || (modelData.isHardwired ? "Internal Hardware" : "Permanent Whitelist")
+                    text: modelData.subtitle || (modelData.is_internal ? "Internal Hardware" : "Permanent Whitelist")
                     color: Color.muted
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
@@ -498,7 +527,7 @@ Panel {
 
                 Button {
                   id: deleteBtn
-                  visible: modelData.id !== "" && !modelData.isHardwired
+                  visible: modelData.id !== "" && !modelData.is_internal
                   iconText: "󰅖"
                   tooltipText: "Revoke rule"
                   foreground: Color.urgent
@@ -512,30 +541,19 @@ Panel {
 
         PanelSeparator {}
 
-        // 6. Footer
+        // 7. Footer
         Item {
           width: parent.width
-          implicitHeight: Math.max(footerLabel.implicitHeight, setupBtn.implicitHeight) + Style.space(6)
+          implicitHeight: footerLabel.implicitHeight + Style.space(4)
 
           Text {
             id: footerLabel
-            text: root.daemonActive ? "󰕥 Hardware Protection Active" : "󰅖 usbguard.service is stopped"
+            text: root.daemonActive ? "󰕥 Hardware Protection Active" : "󰅖 USBGuard is inactive"
             color: root.daemonActive ? Color.muted : Color.urgent
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-          }
-
-          Button {
-            id: setupBtn
-            text: "Setup Wizard"
-            fontSize: Style.font.caption
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            onClicked: {
-              Util.execDetached("omarchy-launch-terminal omarchy-setup-security-usbguard")
-            }
           }
         }
       }
