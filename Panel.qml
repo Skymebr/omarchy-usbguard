@@ -464,8 +464,8 @@ Panel {
                 spacing: Style.space(12)
 
                 Text {
-                  text: "󰕥"
-                  color: Color.accent
+                  text: modelData.icon || "󰕥"
+                  color: modelData.isHardwired ? Color.muted : Color.accent
                   font.family: Style.font.family
                   font.pixelSize: Style.font.title
                   anchors.verticalCenter: parent.verticalCenter
@@ -487,7 +487,7 @@ Panel {
                   }
 
                   Text {
-                    text: (modelData.vidPid ? "ID: " + modelData.vidPid + " · " : "") + (modelData.isHardwired ? "Hardwired baseline" : "Permanent allow")
+                    text: modelData.subtitle || (modelData.isHardwired ? "Internal Hardware" : "Permanent Whitelist")
                     color: Color.muted
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
@@ -513,29 +513,28 @@ Panel {
         PanelSeparator {}
 
         // 6. Footer
-        RowLayout {
+        Item {
           width: parent.width
-          spacing: Style.space(8)
+          implicitHeight: Math.max(footerLabel.implicitHeight, setupBtn.implicitHeight) + Style.space(6)
 
           Text {
+            id: footerLabel
             text: root.daemonActive ? "󰕥 Hardware Protection Active" : "󰅖 usbguard.service is stopped"
             color: root.daemonActive ? Color.muted : Color.urgent
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
-            Layout.alignment: Qt.AlignVCenter
-          }
-
-          Item {
-            Layout.fillWidth: true
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
           }
 
           Button {
-            id: footerBtn
+            id: setupBtn
             text: "Setup Wizard"
             fontSize: Style.font.caption
-            Layout.alignment: Qt.AlignVCenter
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
             onClicked: {
-              Quickshell.execDetached(["omarchy-launch-terminal", "omarchy-setup-security-usbguard"])
+              Util.execDetached("omarchy-launch-terminal omarchy-setup-security-usbguard")
             }
           }
         }

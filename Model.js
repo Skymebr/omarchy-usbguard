@@ -38,7 +38,6 @@ function parseRules(rawText) {
 }
 
 function parseDeviceLine(line) {
-  // Format: <id>: <target> id <vid:pid> serial "<serial>" name "<name>" hash "<hash>" parent-hash "<parent-hash>" via-port "<via-port>" with-interface <interfaces> with-connect-type "<connect-type>"
   var colonIdx = line.indexOf(":");
   if (colonIdx === -1) return null;
 
@@ -62,7 +61,7 @@ function parseDeviceLine(line) {
     ifaces = ifaceMatch[1].replace(/[\{\}]/g, "").trim();
   }
 
-  var classification = classifyDevice(ifaces, name);
+  var classification = classifyDevice(ifaces, name, vidPid, connectType);
 
   return {
     id: idStr,
@@ -72,7 +71,7 @@ function parseDeviceLine(line) {
     isReject: target === "reject",
     vidPid: vidPid || "----:----",
     serial: serial || "",
-    name: cleanName(name, vidPid, connectType),
+    name: classification.displayName,
     rawName: name,
     hash: hash || "",
     parentHash: parentHash || "",
@@ -95,9 +94,12 @@ function parseRuleLine(line) {
     return {
       id: "",
       target: line.startsWith("allow") ? "allow" : "block",
-      name: ct === "hardwired" ? "Hardwired Baseline Rule" : "Global Policy Rule",
+      name: ct === "hardwired" ? "Hardwired Safety Baseline" : "Global Policy Rule",
       vidPid: "",
       hash: "",
+      icon: "󰕥",
+      typeLabel: "Baseline Rule",
+      subtitle: "Anti-lockout protection for internal hardware",
       connectType: ct,
       raw: line,
       isHardwired: line.indexOf('"hardwired"') !== -1
@@ -113,19 +115,30 @@ function parseRuleLine(line) {
   var hash = extractQuoted(rest, "hash");
   var connectType = extractQuoted(rest, "with-connect-type");
 
+  var ifaces = "";
+  var ifaceMatch = rest.match(/with-interface\s+(\{[^}]+\}|[0-9a-fA-F:]+)/);
+  if (ifaceMatch) {
+    ifaces = ifaceMatch[1].replace(/[\{\}]/g, "").trim();
+  }
+
+  var classification = classifyDevice(ifaces, name, vidPid, connectType);
+
   return {
     id: idStr,
     target: target,
     vidPid: vidPid || "",
-    name: cleanName(name, vidPid, connectType) || ("Whitelist Rule #" + idStr),
+    name: classification.displayName || ("Whitelist Rule #" + idStr),
     hash: hash || "",
+    icon: classification.icon || "󰕥",
+    typeLabel: classification.typeLabel,
+    subtitle: (connectType === "hardwired" ? "Internal Hardware" : "Permanent Whitelist") + (vidPid ? " · " + vidPid : ""),
     connectType: connectType || "",
     isHardwired: connectType === "hardwired",
     raw: line
   };
 }
 
-function classifyDevice(ifaces, rawName) {
+function classifyDevice(ifaces, rawName, vidPid, connectType) {
   var hasHid = false;
   var hasStorage = false;
   var hasNet = false;
@@ -155,6 +168,7 @@ function classifyDevice(ifaces, rawName) {
     return {
       icon: "󰕤",
       typeLabel: "High-Risk BadUSB (Storage + HID)",
+      displayName: resolveDisplayName(rawName, vidPid, "BadUSB Combo Device"),
       isBadUsb: true,
       isHub: false,
       riskLevel: "critical"
@@ -165,6 +179,7 @@ function classifyDevice(ifaces, rawName) {
     return {
       icon: "󰕤",
       typeLabel: "High-Risk BadUSB (Storage + Net)",
+      displayName: resolveDisplayName(rawName, vidPid, "BadUSB Network Device"),
       isBadUsb: true,
       isHub: false,
       riskLevel: "critical"
@@ -172,42 +187,110 @@ function classifyDevice(ifaces, rawName) {
   }
 
   if (isKbd) {
-    return { icon: "󰌌", typeLabel: "Keyboard", isBadUsb: false, isHub: false, riskLevel: "info" };
+    return {
+      icon: "󰌌",
+      typeLabel: "Keyboard",
+      displayName: resolveDisplayName(rawName, vidPid, "USB Keyboard"),
+      isBadUsb: false,
+      isHub: false,
+      riskLevel: "info"
+    };
   }
   if (isMouse) {
-    return { icon: "󰍽", typeLabel: "Mouse", isBadUsb: false, isHub: false, riskLevel: "info" };
+    return {
+      icon: "󰍽",
+      typeLabel: "Mouse",
+      displayName: resolveDisplayName(rawName, vidPid, "USB Mouse / Touchpad"),
+      isBadUsb: false,
+      isHub: false,
+      riskLevel: "info"
+    };
+  }
+  if (hasBluetooth || (rawName && rawName.toLowerCase().indexOf("wireless_device") !== -1)) {
+    return {
+      icon: "󰂯",
+      typeLabel: connectType === "hardwired" ? "Internal Bluetooth Radio" : "Bluetooth Adapter",
+      displayName: rawName && rawName !== "Wireless_Device" ? rawName : (vidPid === "04ca:3802" ? "MediaTek Bluetooth Radio (MT7921)" : "Bluetooth Adapter"),
+      isBadUsb: false,
+      isHub: false,
+      riskLevel: "info"
+    };
+  }
+  if (hasVideo || (rawName && rawName.toLowerCase().indexOf("user facing") !== -1)) {
+    return {
+      icon: "󰄀",
+      typeLabel: connectType === "hardwired" ? "Integrated Webcam" : "USB Camera",
+      displayName: rawName ? rawName + (rawName.toLowerCase().indexOf("webcam") === -1 && rawName.toLowerCase().indexOf("camera") === -1 ? " (Webcam)" : "") : "Integrated Webcam",
+      isBadUsb: false,
+      isHub: false,
+      riskLevel: "info"
+    };
   }
   if (hasHid) {
-    return { icon: "󰌌", typeLabel: "Human Interface (HID)", isBadUsb: false, isHub: false, riskLevel: "info" };
+    return {
+      icon: "󰌌",
+      typeLabel: "Human Interface (HID)",
+      displayName: resolveDisplayName(rawName, vidPid, "HID Device"),
+      isBadUsb: false,
+      isHub: false,
+      riskLevel: "info"
+    };
   }
   if (hasStorage) {
-    return { icon: "󰕒", typeLabel: "Mass Storage", isBadUsb: false, isHub: false, riskLevel: "info" };
+    return {
+      icon: "󰕒",
+      typeLabel: "Mass Storage (USB Drive)",
+      displayName: resolveDisplayName(rawName, vidPid, "USB Flash Drive"),
+      isBadUsb: false,
+      isHub: false,
+      riskLevel: "info"
+    };
   }
   if (hasAudio) {
-    return { icon: "󰓗", typeLabel: "Audio Device", isBadUsb: false, isHub: false, riskLevel: "info" };
-  }
-  if (hasVideo) {
-    return { icon: "󰄀", typeLabel: "Camera / Video", isBadUsb: false, isHub: false, riskLevel: "info" };
+    return {
+      icon: "󰓗",
+      typeLabel: "Audio Device / Headset",
+      displayName: resolveDisplayName(rawName, vidPid, "USB Audio"),
+      isBadUsb: false,
+      isHub: false,
+      riskLevel: "info"
+    };
   }
   if (hasNet) {
-    return { icon: "󰖩", typeLabel: "Network Adapter", isBadUsb: false, isHub: false, riskLevel: "info" };
-  }
-  if (hasBluetooth) {
-    return { icon: "󰂯", typeLabel: "Wireless / Bluetooth", isBadUsb: false, isHub: false, riskLevel: "info" };
+    return {
+      icon: "󰖩",
+      typeLabel: "Network Adapter",
+      displayName: resolveDisplayName(rawName, vidPid, "USB Ethernet / Wi-Fi"),
+      isBadUsb: false,
+      isHub: false,
+      riskLevel: "info"
+    };
   }
   if (hasHub) {
-    return { icon: "󰕓", typeLabel: "USB Root Hub", isBadUsb: false, isHub: true, riskLevel: "info" };
+    return {
+      icon: "󰕓",
+      typeLabel: "USB Root Hub",
+      displayName: rawName || "USB Host Controller",
+      isBadUsb: false,
+      isHub: true,
+      riskLevel: "info"
+    };
   }
 
-  return { icon: "󰕓", typeLabel: "USB Peripheral", isBadUsb: false, isHub: false, riskLevel: "info" };
+  return {
+    icon: "󰕓",
+    typeLabel: connectType === "hardwired" ? "Internal Hardware" : "USB Peripheral",
+    displayName: resolveDisplayName(rawName, vidPid, "USB Device"),
+    isBadUsb: false,
+    isHub: false,
+    riskLevel: "info"
+  };
 }
 
-function cleanName(rawName, vidPid, connectType) {
+function resolveDisplayName(rawName, vidPid, fallback) {
   if (!rawName || rawName === "USB Device" || rawName === "Mass Storage" || rawName === "Wireless_Device") {
-    if (connectType === "hardwired" && vidPid) return "Internal Device (" + vidPid + ")";
-    if (vidPid) return "Device (" + vidPid + ")";
-    if (connectType === "hardwired") return "Internal USB Hardware";
-    return "USB Device";
+    if (vidPid) return fallback + " (" + vidPid + ")";
+    return fallback;
   }
   return rawName.replace(/^[-_\s]+/, "").trim();
 }
