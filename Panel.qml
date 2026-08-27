@@ -33,7 +33,6 @@ Panel {
   })
 
   readonly property var sortedDevices: visibleDevices.slice().sort(function(a, b) {
-    // Blocked/BadUSB devices first, then external devices, then internal hardwired devices
     if (a.is_blocked && !b.is_blocked) return -1
     if (!a.is_blocked && b.is_blocked) return 1
     if (a.is_badusb && !b.is_badusb) return -1
@@ -70,6 +69,11 @@ Panel {
     var args = ["python3", backendScript, "--allow", String(devId)]
     if (permanent) args.push("--permanent")
     runAction(args)
+  }
+
+  function untrustDevice(devId) {
+    if (!devId) return
+    runAction(["python3", backendScript, "--untrust", String(devId)])
   }
 
   function blockDevice(devId) {
@@ -269,7 +273,7 @@ Panel {
           }
         }
 
-        // 4. Tab 1: Connected Devices (Unified & Streamlined)
+        // 4. Tab 1: Connected Devices
         Column {
           width: parent.width
           spacing: Style.space(8)
@@ -289,9 +293,8 @@ Panel {
             model: root.sortedDevices
 
             delegate: BorderSurface {
-              id: itemCard
               width: parent.width
-              implicitHeight: itemCol.implicitHeight + Style.space(16)
+              implicitHeight: devCol.implicitHeight + Style.space(16)
               color: modelData.is_blocked
                 ? Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.10)
                 : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.03)
@@ -301,14 +304,14 @@ Panel {
                 : Border.controlSpec("normal", Color.foreground, Color.accent)
 
               Column {
-                id: itemCol
+                id: devCol
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
                 anchors.margins: Style.space(12)
                 spacing: Style.space(10)
 
-                // Top Line: Icon + Titles + Inline Action/Badge
+                // Main Row
                 Row {
                   width: parent.width
                   spacing: Style.space(10)
@@ -325,7 +328,7 @@ Panel {
 
                   Column {
                     anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width - Style.space(50) - (actionArea.visible ? actionArea.width + Style.space(8) : 0)
+                    width: parent.width - Style.space(50) - (devActions.visible ? devActions.width + Style.space(8) : 0)
                     spacing: Style.space(2)
 
                     Text {
@@ -348,26 +351,24 @@ Panel {
                     }
                   }
 
-                  // Trailing Action or Badge
-                  Item {
-                    id: actionArea
+                  // Actions for Allowed Devices
+                  Row {
+                    id: devActions
                     visible: !modelData.is_blocked
-                    width: internalPill.visible ? internalPill.implicitWidth : blockBtn.implicitWidth
-                    height: blockBtn.implicitHeight
+                    spacing: Style.space(6)
                     anchors.verticalCenter: parent.verticalCenter
 
                     BorderSurface {
-                      id: internalPill
                       visible: modelData.is_internal
                       radius: Style.cornerRadius
                       color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.06)
                       borderSpec: Border.controlSpec("muted", Color.muted, Color.muted)
                       implicitHeight: Style.space(22)
-                      implicitWidth: pillText.implicitWidth + Style.space(16)
+                      implicitWidth: devPillText.implicitWidth + Style.space(16)
                       anchors.verticalCenter: parent.verticalCenter
 
                       Text {
-                        id: pillText
+                        id: devPillText
                         text: "Internal"
                         color: Color.muted
                         font.family: Style.font.family
@@ -377,17 +378,34 @@ Panel {
                     }
 
                     Button {
-                      id: blockBtn
-                      visible: modelData.is_allowed && !modelData.is_internal
+                      visible: modelData.is_allowed && !modelData.is_internal && !modelData.is_trusted
+                      text: "󰕥 Trust"
+                      fontSize: Style.font.caption
+                      tooltipText: "Make permanent in Whitelist"
+                      onClicked: root.allowDevice(modelData.id, true)
+                    }
+
+                    Button {
+                      visible: modelData.is_allowed && !modelData.is_internal && modelData.is_trusted
+                      iconText: "󰅖"
+                      text: "Revoke"
+                      fontSize: Style.font.caption
+                      foreground: Color.urgent
+                      tooltipText: "Revoke permanent whitelist rule and block device"
+                      onClicked: root.untrustDevice(modelData.id)
+                    }
+
+                    Button {
+                      visible: modelData.is_allowed && !modelData.is_internal && !modelData.is_trusted
                       text: "Block"
                       fontSize: Style.font.caption
-                      anchors.verticalCenter: parent.verticalCenter
+                      tooltipText: "Block for this session"
                       onClicked: root.blockDevice(modelData.id)
                     }
                   }
                 }
 
-                // Action Bar for Blocked Devices (Displayed directly inside the card)
+                // Actions for Blocked Devices
                 Row {
                   visible: modelData.is_blocked
                   spacing: Style.space(6)

@@ -2,7 +2,7 @@
 """
 Omarchy USBGuard High-Performance Backend Helper
 Blazing fast hardware database resolution, BadUSB inspection,
-policy management, and clean JSON formatting for the Quickshell frontend.
+unified device-to-rule linking, and clean JSON formatting for Quickshell.
 """
 
 import sys
@@ -315,80 +315,11 @@ def get_status_payload():
 
     hw_db, vendor_db = resolve_hardware_names_bulk(all_vid_pids)
 
-    devices = []
-    for line in raw_devices:
-        dev_id, rest = line.split(":", 1)
-        dev_id = dev_id.strip()
-        rest = rest.strip()
-
-        parts = rest.split()
-        target = parts[0] if parts else "unknown"
-
-        vid_pid = ""
-        m_vid = re.search(r"id\s+([0-9a-fA-F]{4}:[0-9a-fA-F]{4})", rest)
-        if m_vid:
-            vid_pid = m_vid.group(1).lower()
-
-        serial = ""
-        m_ser = re.search(r'serial\s+"([^"]*)"', rest)
-        if m_ser:
-            serial = m_ser.group(1)
-
-        raw_name = ""
-        m_name = re.search(r'name\s+"([^"]*)"', rest)
-        if m_name:
-            raw_name = m_name.group(1)
-
-        dev_hash = ""
-        m_hash = re.search(r'hash\s+"([^"]*)"', rest)
-        if m_hash:
-            dev_hash = m_hash.group(1)
-
-        via_port = ""
-        m_port = re.search(r'via-port\s+"([^"]*)"', rest)
-        if m_port:
-            via_port = m_port.group(1)
-
-        connect_type = ""
-        m_ct = re.search(r'with-connect-type\s+"([^"]*)"', rest)
-        if m_ct:
-            connect_type = m_ct.group(1)
-
-        ifaces = ""
-        m_if = re.search(r"with-interface\s+(\{[^}]+\}|[0-9a-fA-F:]+)", rest)
-        if m_if:
-            ifaces = m_if.group(1).replace("{", "").replace("}", "").strip()
-
-        vid = vid_pid.split(":")[0] if ":" in vid_pid else ""
-        hw_name = hw_db.get(vid_pid, "")
-        vendor_name = vendor_db.get(vid, "")
-        sys_info = sysfs_map.get(vid_pid)
-
-        cls = classify_device(ifaces, raw_name, vid_pid, connect_type, hw_name, vendor_name, sys_info)
-
-        devices.append({
-            "id": dev_id,
-            "target": target,
-            "is_allowed": target == "allow",
-            "is_blocked": target in ("block", "reject"),
-            "is_reject": target == "reject",
-            "vid_pid": vid_pid or "----:----",
-            "serial": serial,
-            "name": cls["display_name"],
-            "raw_name": raw_name,
-            "hash": dev_hash,
-            "port": via_port,
-            "connect_type": connect_type,
-            "is_internal": connect_type == "hardwired",
-            "is_hub": cls["is_hub"],
-            "icon": cls["icon"],
-            "type_label": cls["type_label"],
-            "is_badusb": cls["is_badusb"],
-            "risk": cls["risk"],
-            "category": cls["category"]
-        })
-
+    # 1. Parse rules first to build whitelist lookup map
     rules = []
+    rules_by_hash = {}
+    rules_by_vidpid = {}
+
     for line in raw_rules:
         if ":" not in line:
             ct = ""
@@ -461,7 +392,7 @@ def get_status_payload():
                 subtitle += f" · {vid_pid}"
             icon = cls["icon"] if connect_type != "hardwired" else "󰕥"
 
-        rules.append({
+        rule_obj = {
             "id": rule_id,
             "target": target,
             "vid_pid": vid_pid,
@@ -473,6 +404,96 @@ def get_status_payload():
             "connect_type": connect_type,
             "is_internal": connect_type == "hardwired",
             "is_hardwired": connect_type == "hardwired"
+        }
+        rules.append(rule_obj)
+
+        if dev_hash and connect_type != "hardwired":
+            rules_by_hash[dev_hash] = rule_id
+        if vid_pid and connect_type != "hardwired":
+            rules_by_vidpid[vid_pid] = rule_id
+
+    # 2. Parse devices and link corresponding rule ID if trusted
+    devices = []
+    for line in raw_devices:
+        dev_id, rest = line.split(":", 1)
+        dev_id = dev_id.strip()
+        rest = rest.strip()
+
+        parts = rest.split()
+        target = parts[0] if parts else "unknown"
+
+        vid_pid = ""
+        m_vid = re.search(r"id\s+([0-9a-fA-F]{4}:[0-9a-fA-F]{4})", rest)
+        if m_vid:
+            vid_pid = m_vid.group(1).lower()
+
+        serial = ""
+        m_ser = re.search(r'serial\s+"([^"]*)"', rest)
+        if m_ser:
+            serial = m_ser.group(1)
+
+        raw_name = ""
+        m_name = re.search(r'name\s+"([^"]*)"', rest)
+        if m_name:
+            raw_name = m_name.group(1)
+
+        dev_hash = ""
+        m_hash = re.search(r'hash\s+"([^"]*)"', rest)
+        if m_hash:
+            dev_hash = m_hash.group(1)
+
+        via_port = ""
+        m_port = re.search(r'via-port\s+"([^"]*)"', rest)
+        if m_port:
+            via_port = m_port.group(1)
+
+        connect_type = ""
+        m_ct = re.search(r'with-connect-type\s+"([^"]*)"', rest)
+        if m_ct:
+            connect_type = m_ct.group(1)
+
+        ifaces = ""
+        m_if = re.search(r"with-interface\s+(\{[^}]+\}|[0-9a-fA-F:]+)", rest)
+        if m_if:
+            ifaces = m_if.group(1).replace("{", "").replace("}", "").strip()
+
+        vid = vid_pid.split(":")[0] if ":" in vid_pid else ""
+        hw_name = hw_db.get(vid_pid, "")
+        vendor_name = vendor_db.get(vid, "")
+        sys_info = sysfs_map.get(vid_pid)
+
+        cls = classify_device(ifaces, raw_name, vid_pid, connect_type, hw_name, vendor_name, sys_info)
+
+        # Match permanent rule if present
+        matched_rule_id = ""
+        if connect_type != "hardwired":
+            if dev_hash in rules_by_hash:
+                matched_rule_id = rules_by_hash[dev_hash]
+            elif vid_pid in rules_by_vidpid:
+                matched_rule_id = rules_by_vidpid[vid_pid]
+
+        devices.append({
+            "id": dev_id,
+            "target": target,
+            "is_allowed": target == "allow",
+            "is_blocked": target in ("block", "reject"),
+            "is_reject": target == "reject",
+            "is_trusted": bool(matched_rule_id),
+            "rule_id": matched_rule_id,
+            "vid_pid": vid_pid or "----:----",
+            "serial": serial,
+            "name": cls["display_name"],
+            "raw_name": raw_name,
+            "hash": dev_hash,
+            "port": via_port,
+            "connect_type": connect_type,
+            "is_internal": connect_type == "hardwired",
+            "is_hub": cls["is_hub"],
+            "icon": cls["icon"],
+            "type_label": cls["type_label"],
+            "is_badusb": cls["is_badusb"],
+            "risk": cls["risk"],
+            "category": cls["category"]
         })
 
     blocked_count = sum(1 for d in devices if d["is_blocked"] and not d["is_hub"])
@@ -490,6 +511,40 @@ def get_status_payload():
         "rules": rules
     }
 
+def untrust_and_block(dev_id):
+    """
+    Atomic operation: removes the permanent whitelist rule for a device AND blocks it immediately.
+    """
+    # 1. Inspect devices to find hash or vid_pid
+    dev_out, _ = subprocess.Popen(["usbguard", "list-devices"], stdout=subprocess.PIPE, text=True).communicate()
+    rules_out, _ = subprocess.Popen(["usbguard", "list-rules"], stdout=subprocess.PIPE, text=True).communicate()
+
+    dev_hash = ""
+    dev_vid = ""
+    for line in (dev_out or "").splitlines():
+        if line.startswith(f"{dev_id}:") or line.startswith(f"{dev_id} :"):
+            m_h = re.search(r'hash\s+"([^"]*)"', line)
+            if m_h:
+                dev_hash = m_h.group(1)
+            m_v = re.search(r"id\s+([0-9a-fA-F]{4}:[0-9a-fA-F]{4})", line)
+            if m_v:
+                dev_vid = m_v.group(1).lower()
+            break
+
+    # 2. Find matching rule
+    if rules_out:
+        for rline in rules_out.splitlines():
+            if ":" in rline:
+                rid, rrest = rline.split(":", 1)
+                rid = rid.strip()
+                if dev_hash and f'hash "{dev_hash}"' in rrest:
+                    subprocess.run(["usbguard", "remove-rule", rid], check=False)
+                elif dev_vid and f"id {dev_vid}" in rrest.lower() and '"hardwired"' not in rrest:
+                    subprocess.run(["usbguard", "remove-rule", rid], check=False)
+
+    # 3. Block device
+    subprocess.run(["usbguard", "block-device", str(dev_id)], check=False)
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("--status", "status"):
         print(json.dumps(get_status_payload(), indent=2))
@@ -504,6 +559,12 @@ def main():
             subprocess.run(["usbguard", "allow-device", str(dev_id), "-p"], check=False)
         else:
             subprocess.run(["usbguard", "allow-device", str(dev_id)], check=False)
+        print(json.dumps({"success": True}))
+        return
+
+    if cmd == "--untrust" and len(sys.argv) >= 3:
+        dev_id = sys.argv[2]
+        untrust_and_block(dev_id)
         print(json.dumps({"success": True}))
         return
 
