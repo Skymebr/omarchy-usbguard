@@ -153,7 +153,7 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    contentWidth: panel.fittedContentWidth(Style.space(450))
+    contentWidth: panel.fittedContentWidth(Style.space(430))
     contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight)
 
     PanelKeyCatcher {
@@ -284,7 +284,7 @@ Panel {
 
                   Column {
                     width: parent.width - Style.space(40)
-                    spacing: Style.space(3)
+                    spacing: Style.space(2)
 
                     Text {
                       text: modelData.name
@@ -297,21 +297,11 @@ Panel {
                     }
 
                     Text {
-                      text: (modelData.interfaces_summary ? modelData.interfaces_summary + " · " : "") + "ID " + modelData.id + " (" + modelData.vid_pid + ") · Port " + modelData.port
+                      text: modelData.type_label + " · ID " + modelData.id + " (" + modelData.vid_pid + ") · Port " + modelData.port
                       color: Color.urgent
                       font.family: Style.font.family
                       font.pixelSize: Style.font.caption
                       font.bold: true
-                      elide: Text.ElideRight
-                      width: parent.width
-                    }
-
-                    Text {
-                      visible: (modelData.speed && modelData.speed !== "") || (modelData.manufacturer && modelData.manufacturer !== "")
-                      text: (modelData.manufacturer ? "Fabricante: " + modelData.manufacturer + "  ·  " : "") + (modelData.speed ? "Velocidade: " + modelData.speed : "")
-                      color: Color.muted
-                      font.family: Style.font.family
-                      font.pixelSize: Style.font.caption
                       elide: Text.ElideRight
                       width: parent.width
                     }
@@ -427,7 +417,7 @@ Panel {
                   }
 
                   Text {
-                    text: (modelData.interfaces_summary ? modelData.interfaces_summary : modelData.type_label) + " · " + (modelData.is_internal ? "Internal Hardware" : "Port " + modelData.port + (modelData.speed ? " · " + modelData.speed : ""))
+                    text: modelData.type_label + " · " + (modelData.is_internal ? "Internal Hardware" : "Port " + modelData.port)
                     color: Color.muted
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
