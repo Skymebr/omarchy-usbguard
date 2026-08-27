@@ -153,7 +153,7 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    contentWidth: panel.fittedContentWidth(Style.space(430))
+    contentWidth: panel.fittedContentWidth(Style.space(450))
     contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight)
 
     PanelKeyCatcher {
@@ -267,8 +267,8 @@ Panel {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
-                anchors.margins: Style.space(10)
-                spacing: Style.space(8)
+                anchors.margins: Style.space(12)
+                spacing: Style.space(10)
 
                 Row {
                   width: parent.width
@@ -284,7 +284,7 @@ Panel {
 
                   Column {
                     width: parent.width - Style.space(40)
-                    spacing: Style.space(2)
+                    spacing: Style.space(3)
 
                     Text {
                       text: modelData.name
@@ -297,11 +297,23 @@ Panel {
                     }
 
                     Text {
-                      text: modelData.type_label + " · ID " + modelData.id + " (" + modelData.vid_pid + ")"
+                      text: (modelData.interfaces_summary ? modelData.interfaces_summary + " · " : "") + "ID " + modelData.id + " (" + modelData.vid_pid + ") · Port " + modelData.port
                       color: Color.urgent
                       font.family: Style.font.family
                       font.pixelSize: Style.font.caption
                       font.bold: true
+                      elide: Text.ElideRight
+                      width: parent.width
+                    }
+
+                    Text {
+                      visible: (modelData.speed && modelData.speed !== "") || (modelData.manufacturer && modelData.manufacturer !== "")
+                      text: (modelData.manufacturer ? "Fabricante: " + modelData.manufacturer + "  ·  " : "") + (modelData.speed ? "Velocidade: " + modelData.speed : "")
+                      color: Color.muted
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                      width: parent.width
                     }
                   }
                 }
@@ -375,7 +387,7 @@ Panel {
 
             delegate: BorderSurface {
               width: parent.width
-              implicitHeight: devRow.implicitHeight + Style.space(14)
+              implicitHeight: devRow.implicitHeight + Style.space(16)
               color: modelData.is_blocked
                 ? Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.10)
                 : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.03)
@@ -400,7 +412,7 @@ Panel {
                 }
 
                 Column {
-                  width: parent.width - Style.space(140)
+                  width: parent.width - Style.space(130)
                   spacing: Style.space(2)
                   anchors.verticalCenter: parent.verticalCenter
 
@@ -415,7 +427,7 @@ Panel {
                   }
 
                   Text {
-                    text: modelData.type_label + " · " + (modelData.is_internal ? "Internal Hardware" : "Port " + modelData.port)
+                    text: (modelData.interfaces_summary ? modelData.interfaces_summary : modelData.type_label) + " · " + (modelData.is_internal ? "Internal Hardware" : "Port " + modelData.port + (modelData.speed ? " · " + modelData.speed : ""))
                     color: Color.muted
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
