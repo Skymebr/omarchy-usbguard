@@ -5,9 +5,44 @@
 [![Security: Kernel Level](https://img.shields.io/badge/Security-Kernel--Level-critical.svg)](https://usbguard.github.io/)
 [![Architecture: Event--Driven](https://img.shields.io/badge/Architecture-Event--Driven-success.svg)](https://github.com/Skymebr/omarchy-usbguard)
 
-A zero-friction, kernel-level USB device authorization and BadUSB mitigation suite for the **[Omarchy](https://omarchy.org)** Linux environment.
+A zero-friction, kernel-level USB device authorization, BadUSB mitigation suite, and native status bar plugin for the **[Omarchy](https://omarchy.org)** Linux desktop environment.
 
-This project bridges **USBGuard** hardware authorization with the native **Quickshell / Omarchy Shell** desktop layer, providing block-by-default physical port security without interrupting standard developer workflows.
+```
+  󰌾 1        ┌────────────────────────────────────────────────────────┐
+             │  󰌾  USBGuard                                      󰑐   │
+             │     1 BLOCKED DEVICE(S)                                │
+             │  ────────────────────────────────────────────────────  │
+             │  [ 󰕓 Connected (3) ]     [ 󰕥 Whitelist Rules (3) ]     │
+             │                                                        │
+             │  🚨 SEMICO USB Keyboard                                │
+             │     USB Keyboard · ID 28 (1a2c:6004) · Port 3-3        │
+             │     [ Allow (Session) ]  [ 󰕥 Trust (Permanent) ] [ 󰅖 ] │
+             │                                                        │
+             │  ●  Lite-On MediaTek Bluetooth MT7921     [ Internal ] │
+             │     Internal Bluetooth Radio · Hardwired               │
+             │  ●  HD User Facing (Webcam)               [ Internal ] │
+             │     Integrated Webcam · Hardwired                      │
+             │  ────────────────────────────────────────────────────  │
+             │  󰕥 Hardware Protection Active                          │
+             └────────────────────────────────────────────────────────┘
+```
+
+### ⚡ Quick Install (Omarchy Plugin)
+
+```bash
+omarchy plugin add https://github.com/Skymebr/omarchy-usbguard.git --enable --yes
+```
+
+---
+
+## Features
+
+- **Native Status Bar Widget (`Panel.qml`):** Integrated Quickshell icon with dynamic security states (`󰕓` Safe, `󰌾` Blocked with count badge, `󰕤` BadUSB Threat).
+- **Zero-Friction Authorization:** One-click `Allow (Session)`, `Trust (Permanent)`, `Reject`, and `Block` actions.
+- **Visual Whitelist Manager:** Inspect active permanent rules and revoke trusted devices with a single click (`󰅖`).
+- **High-Speed Hardware Resolution (`backend.py`):** Sub-15ms Linux `hwdata` and `sysfs` bulk scanner resolving official vendor and product names.
+- **Active BadUSB Mitigation:** Heuristic detection for composite storage + keystroke/network injection attacks.
+- **Anti-Lockout Baseline:** Automatic preservation of onboard motherboard hardware (webcam, bluetooth, keyboard/touchpad).
 
 ---
 
