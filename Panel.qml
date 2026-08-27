@@ -32,8 +32,15 @@ Panel {
     return !root.hideHubs || !d.is_hub
   })
 
-  readonly property var blockedDevices: visibleDevices.filter(function(d) {
-    return d.is_blocked
+  readonly property var sortedDevices: visibleDevices.slice().sort(function(a, b) {
+    // Blocked/BadUSB devices first, then external devices, then internal hardwired devices
+    if (a.is_blocked && !b.is_blocked) return -1
+    if (!a.is_blocked && b.is_blocked) return 1
+    if (a.is_badusb && !b.is_badusb) return -1
+    if (!a.is_badusb && b.is_badusb) return 1
+    if (!a.is_internal && b.is_internal) return -1
+    if (a.is_internal && !b.is_internal) return 1
+    return 0
   })
 
   readonly property bool hasBlocked: blockedCount > 0
@@ -153,7 +160,7 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    contentWidth: panel.fittedContentWidth(Style.space(430))
+    contentWidth: panel.fittedContentWidth(Style.space(460))
     contentHeight: panel.fittedContentHeight(mainColumn.implicitHeight)
 
     PanelKeyCatcher {
@@ -175,7 +182,7 @@ Panel {
           meta: root.needsSetup
             ? "INITIALIZATION REQUIRED"
             : (root.daemonActive
-                ? (root.hasBadUsb ? "BADUSB THREAT DETECTED" : (root.hasBlocked ? root.blockedCount + " BLOCKED DEVICE(S)" : root.visibleCount + " CONNECTED"))
+                ? (root.hasBadUsb ? "BADUSB THREAT DETECTED" : (root.hasBlocked ? root.blockedCount + " BLOCKED DEVICE(S)" : root.visibleCount + " DEVICES PROTECTED"))
                 : "SERVICE INACTIVE")
           iconComponent: Component {
             Text {
@@ -188,7 +195,7 @@ Panel {
           trailingControl: Component {
             Button {
               iconText: "󰑐"
-              tooltipText: "Refresh"
+              tooltipText: "Refresh state"
               onClicked: root.refresh()
             }
           }
@@ -196,7 +203,7 @@ Panel {
 
         PanelSeparator {}
 
-        // 2. Onboarding / Setup Banner (For fresh installs by other users)
+        // 2. Onboarding / Setup Banner (For fresh installs)
         BorderSurface {
           width: parent.width
           visible: root.needsSetup || !root.daemonActive
@@ -222,7 +229,7 @@ Panel {
             }
 
             Text {
-              text: "Protect against BadUSB attacks and auto-allow your internal motherboard hardware (webcam, bluetooth, keyboard)."
+              text: "Scan internal motherboard hardware (webcam, bluetooth, keyboard) into whitelist baseline and activate kernel-level USBGuard protection."
               color: Color.muted
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
@@ -241,49 +248,84 @@ Panel {
           }
         }
 
-        // 3. Action Required Alert for Blocked / BadUSB Devices
+        // 3. Tab Buttons
+        Row {
+          width: parent.width
+          spacing: Style.space(8)
+          visible: !root.needsSetup
+
+          Button {
+            text: "󰕓 Connected (" + root.visibleCount + ")"
+            selected: root.currentTab === "devices"
+            fontSize: Style.font.bodySmall
+            onClicked: root.currentTab = "devices"
+          }
+
+          Button {
+            text: "󰕥 Whitelist Rules (" + root.rules.length + ")"
+            selected: root.currentTab === "rules"
+            fontSize: Style.font.bodySmall
+            onClicked: root.currentTab = "rules"
+          }
+        }
+
+        // 4. Tab 1: Connected Devices (Unified & Streamlined)
         Column {
           width: parent.width
           spacing: Style.space(8)
-          visible: root.hasBlocked && !root.needsSetup
+          visible: root.currentTab === "devices" && !root.needsSetup
 
-          PanelSectionHeader {
-            text: "ACTION REQUIRED"
-            foreground: Color.urgent
+          Text {
+            visible: root.visibleCount === 0
+            text: "No USB devices connected."
+            color: Color.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            topPadding: Style.space(8)
+            bottomPadding: Style.space(8)
           }
 
           Repeater {
-            model: root.blockedDevices
+            model: root.sortedDevices
 
             delegate: BorderSurface {
+              id: itemCard
               width: parent.width
-              implicitHeight: alertCol.implicitHeight + Style.space(16)
-              color: Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.12)
-              borderSpec: Border.controlSpec("urgent", Color.urgent, Color.urgent)
+              implicitHeight: itemCol.implicitHeight + Style.space(16)
+              color: modelData.is_blocked
+                ? Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.10)
+                : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.03)
               radius: Style.cornerRadius
+              borderSpec: modelData.is_blocked
+                ? Border.controlSpec("urgent", Color.urgent, Color.urgent)
+                : Border.controlSpec("normal", Color.foreground, Color.accent)
 
               Column {
-                id: alertCol
+                id: itemCol
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
                 anchors.margins: Style.space(12)
                 spacing: Style.space(10)
 
+                // Top Line: Icon + Titles + Inline Action/Badge
                 Row {
                   width: parent.width
                   spacing: Style.space(10)
 
                   Text {
                     text: modelData.icon
-                    color: Color.urgent
+                    color: modelData.is_blocked || modelData.is_badusb
+                      ? Color.urgent
+                      : (modelData.is_internal ? Color.muted : Color.accent)
                     font.family: Style.font.family
                     font.pixelSize: Style.font.title
                     anchors.verticalCenter: parent.verticalCenter
                   }
 
                   Column {
-                    width: parent.width - Style.space(40)
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - Style.space(50) - (actionArea.visible ? actionArea.width + Style.space(8) : 0)
                     spacing: Style.space(2)
 
                     Text {
@@ -297,18 +339,57 @@ Panel {
                     }
 
                     Text {
-                      text: modelData.type_label + " · ID " + modelData.id + " (" + modelData.vid_pid + ") · Port " + modelData.port
-                      color: Color.urgent
+                      text: modelData.type_label + " · " + (modelData.is_internal ? "Internal Hardware" : "Port " + modelData.port + " (" + modelData.vid_pid + ")")
+                      color: modelData.is_blocked ? Color.urgent : Color.muted
                       font.family: Style.font.family
                       font.pixelSize: Style.font.caption
-                      font.bold: true
                       elide: Text.ElideRight
                       width: parent.width
                     }
                   }
+
+                  // Trailing Action or Badge
+                  Item {
+                    id: actionArea
+                    visible: !modelData.is_blocked
+                    width: internalPill.visible ? internalPill.implicitWidth : blockBtn.implicitWidth
+                    height: blockBtn.implicitHeight
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    BorderSurface {
+                      id: internalPill
+                      visible: modelData.is_internal
+                      radius: Style.cornerRadius
+                      color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.06)
+                      borderSpec: Border.controlSpec("muted", Color.muted, Color.muted)
+                      implicitHeight: Style.space(22)
+                      implicitWidth: pillText.implicitWidth + Style.space(16)
+                      anchors.verticalCenter: parent.verticalCenter
+
+                      Text {
+                        id: pillText
+                        text: "Internal"
+                        color: Color.muted
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
+                        anchors.centerIn: parent
+                      }
+                    }
+
+                    Button {
+                      id: blockBtn
+                      visible: modelData.is_allowed && !modelData.is_internal
+                      text: "Block"
+                      fontSize: Style.font.caption
+                      anchors.verticalCenter: parent.verticalCenter
+                      onClicked: root.blockDevice(modelData.id)
+                    }
+                  }
                 }
 
+                // Action Bar for Blocked Devices (Displayed directly inside the card)
                 Row {
+                  visible: modelData.is_blocked
                   spacing: Style.space(6)
                   anchors.right: parent.right
 
@@ -319,7 +400,7 @@ Panel {
                   }
 
                   Button {
-                    text: "Trust (Permanent)"
+                    text: "󰕥 Trust (Permanent)"
                     fontSize: Style.font.caption
                     selected: true
                     onClicked: root.allowDevice(modelData.id, true)
@@ -337,132 +418,10 @@ Panel {
           }
         }
 
-        // 4. Tabs
-        Row {
-          width: parent.width
-          spacing: Style.space(6)
-          visible: !root.needsSetup
-
-          Button {
-            text: "Connected (" + root.visibleCount + ")"
-            selected: root.currentTab === "devices"
-            onClicked: root.currentTab = "devices"
-          }
-
-          Button {
-            text: "Whitelist Rules (" + root.rules.length + ")"
-            selected: root.currentTab === "rules"
-            onClicked: root.currentTab = "rules"
-          }
-        }
-
-        // 5. Tab 1: Connected Devices
+        // 5. Tab 2: Whitelist Rules
         Column {
           width: parent.width
-          spacing: Style.space(6)
-          visible: root.currentTab === "devices" && !root.needsSetup
-
-          Text {
-            visible: root.visibleCount === 0
-            text: "No USB devices connected."
-            color: Color.muted
-            font.family: Style.font.family
-            font.pixelSize: Style.font.body
-            topPadding: Style.space(8)
-            bottomPadding: Style.space(8)
-          }
-
-          Repeater {
-            model: root.visibleDevices
-
-            delegate: BorderSurface {
-              width: parent.width
-              implicitHeight: devRow.implicitHeight + Style.space(16)
-              color: modelData.is_blocked
-                ? Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.10)
-                : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.03)
-              radius: Style.cornerRadius
-              borderSpec: Border.controlSpec("normal", Color.foreground, Color.accent)
-
-              Row {
-                id: devRow
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.leftMargin: Style.space(12)
-                anchors.rightMargin: Style.space(12)
-                spacing: Style.space(12)
-
-                Text {
-                  text: modelData.icon
-                  color: modelData.is_blocked ? Color.urgent : (modelData.is_internal ? Color.muted : Color.accent)
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.title
-                  anchors.verticalCenter: parent.verticalCenter
-                }
-
-                Column {
-                  width: parent.width - Style.space(130)
-                  spacing: Style.space(2)
-                  anchors.verticalCenter: parent.verticalCenter
-
-                  Text {
-                    text: modelData.name
-                    color: Color.foreground
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.body
-                    font.bold: true
-                    elide: Text.ElideRight
-                    width: parent.width
-                  }
-
-                  Text {
-                    text: modelData.type_label + " · " + (modelData.is_internal ? "Internal Hardware" : "Port " + modelData.port)
-                    color: Color.muted
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                    elide: Text.ElideRight
-                    width: parent.width
-                  }
-                }
-
-                Row {
-                  anchors.verticalCenter: parent.verticalCenter
-                  spacing: Style.space(4)
-
-                  Button {
-                    visible: modelData.is_allowed && !modelData.is_internal
-                    text: "Block"
-                    fontSize: Style.font.caption
-                    onClicked: root.blockDevice(modelData.id)
-                  }
-
-                  Button {
-                    visible: modelData.is_blocked
-                    text: "Allow"
-                    fontSize: Style.font.caption
-                    selected: true
-                    onClicked: root.allowDevice(modelData.id, false)
-                  }
-
-                  Text {
-                    visible: modelData.is_internal
-                    text: "Internal"
-                    color: Color.muted
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.caption
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
-                }
-              }
-            }
-          }
-        }
-
-        // 6. Tab 2: Whitelist Rules
-        Column {
-          width: parent.width
-          spacing: Style.space(6)
+          spacing: Style.space(8)
           visible: root.currentTab === "rules" && !root.needsSetup
 
           Text {
@@ -480,19 +439,19 @@ Panel {
 
             delegate: BorderSurface {
               width: parent.width
-              implicitHeight: ruleRow.implicitHeight + Style.space(14)
+              implicitHeight: ruleCol.implicitHeight + Style.space(16)
               color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.03)
               radius: Style.cornerRadius
               borderSpec: Border.controlSpec("normal", Color.foreground, Color.accent)
 
               Row {
-                id: ruleRow
+                id: ruleCol
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.leftMargin: Style.space(12)
                 anchors.rightMargin: Style.space(12)
-                spacing: Style.space(12)
+                spacing: Style.space(10)
 
                 Text {
                   text: modelData.icon || "󰕥"
@@ -503,9 +462,9 @@ Panel {
                 }
 
                 Column {
-                  width: parent.width - (deleteBtn.visible ? Style.space(110) : Style.space(60))
-                  spacing: Style.space(2)
                   anchors.verticalCenter: parent.verticalCenter
+                  width: parent.width - Style.space(50) - (deleteBtn.visible ? deleteBtn.width + Style.space(8) : (rulePill.visible ? rulePill.implicitWidth + Style.space(8) : 0))
+                  spacing: Style.space(2)
 
                   Text {
                     text: modelData.name
@@ -518,12 +477,32 @@ Panel {
                   }
 
                   Text {
-                    text: modelData.subtitle || (modelData.is_internal ? "Internal Hardware" : "Permanent Whitelist")
+                    text: modelData.subtitle || (modelData.is_internal ? "Internal Hardware Baseline" : "Permanent Whitelist")
                     color: Color.muted
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
                     elide: Text.ElideRight
                     width: parent.width
+                  }
+                }
+
+                BorderSurface {
+                  id: rulePill
+                  visible: modelData.is_internal
+                  radius: Style.cornerRadius
+                  color: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.06)
+                  borderSpec: Border.controlSpec("muted", Color.muted, Color.muted)
+                  implicitHeight: Style.space(22)
+                  implicitWidth: rulePillText.implicitWidth + Style.space(16)
+                  anchors.verticalCenter: parent.verticalCenter
+
+                  Text {
+                    id: rulePillText
+                    text: "Baseline"
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    anchors.centerIn: parent
                   }
                 }
 
@@ -543,7 +522,7 @@ Panel {
 
         PanelSeparator {}
 
-        // 7. Footer
+        // 6. Footer
         Item {
           width: parent.width
           implicitHeight: footerLabel.implicitHeight + Style.space(4)
