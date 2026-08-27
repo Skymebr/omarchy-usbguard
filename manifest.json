@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.skymebr.usbguard",
+  "name": "USBGuard",
+  "version": "1.0.0",
+  "author": "Skymebr",
+  "license": "MIT",
+  "description": "Zero-friction kernel-level USB authorization, BadUSB mitigation, and device manager for Omarchy.",
+  "homepage": "https://github.com/Skymebr/omarchy-usbguard",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "USBGuard",
+    "description": "Hardware-level USB protection, BadUSB detection, and connected device manager",
+    "category": "Security",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "showBlockedBadge": true,
+      "hideHubs": true
+    },
+    "schema": [
+      {
+        "key": "showBlockedBadge",
+        "type": "boolean",
+        "label": "Show alert badge when devices are blocked",
+        "defaultValue": true
+      },
+      {
+        "key": "hideHubs",
+        "type": "boolean",
+        "label": "Hide internal USB Root Hubs from device list",
+        "defaultValue": true
+      }
+    ]
+  }
+}

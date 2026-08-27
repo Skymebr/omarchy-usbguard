@@ -88,6 +88,21 @@ Firmware strings (`iProduct`, `iSerial`) are sanitized before being passed to de
 
 ## Installation
 
+### Method 1: Native Omarchy Shell Plugin (Recommended)
+
+Install and enable the status bar widget and popup panel directly via the Omarchy CLI:
+
+```bash
+omarchy plugin add https://github.com/Skymebr/omarchy-usbguard.git --enable --yes
+```
+
+Then run the one-time hardware baseline setup wizard:
+```bash
+omarchy-setup-security-usbguard
+```
+
+### Method 2: Manual Clone & Setup
+
 Clone the repository and run the setup wizard:
 
 ```bash
@@ -111,6 +126,9 @@ cd omarchy-usbguard
 
 | File | Purpose |
 | :--- | :--- |
+| `manifest.json` | Omarchy Shell plugin manifest defining bar widget and settings schema. |
+| `Panel.qml` | Quickshell bar widget and interactive control panel flyout. |
+| `Model.js` | Parser and classifier for USB device classes, heuristics, and rules. |
 | `omarchy-setup-security-usbguard` | Installation wizard, policy generator, and rollback manager. |
 | `omarchy-setup-usbguard` | Compatibility symlink mapping to setup wizard. |
 | `omarchy-usbguard-watch` | Background systemd service wrapper invoking event delegation. |
