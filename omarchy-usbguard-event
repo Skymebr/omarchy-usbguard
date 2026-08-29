@@ -4,6 +4,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_SCRIPT="${SCRIPT_DIR}/backend.py"
+
 event="${USBGUARD_DEVICE_EVENT:-}"
 dev_id="${USBGUARD_DEVICE_ID:-}"
 target="${USBGUARD_DEVICE_TARGET:-}"
@@ -52,91 +55,101 @@ if [[ "$rule" =~ with-connect-type\ \"([^\"]*)\" ]]; then
   dev_connect_type="${BASH_REMATCH[1]}"
 fi
 
-# 3. Resolve hardware name from official Linux USB database (lsusb)
-resolve_name() {
-  local v_p="$1"
-  local raw="$2"
-  local resolved=""
+# 3. Fast sysfs lookup for manufacturer / product without forking lsusb
+resolve_from_sysfs() {
+  local target_vp="${1,,}"
+  local fallback="$2"
 
-  if [[ -n "$v_p" ]]; then
-    resolved=$(lsusb -d "$v_p" 2>/dev/null | sed -E 's/.*ID [0-9a-fA-F:]+ //' | xargs || true)
+  if [[ -z "$target_vp" ]]; then
+    echo "$fallback"
+    return
   fi
 
-  if [[ -n "$resolved" && "$resolved" != "USB Device" && "$resolved" != "Mass Storage" ]]; then
-    echo "$resolved"
-  elif [[ -n "$raw" && "$raw" != "USB Device" && "$raw" != "Mass Storage" ]]; then
-    echo "$raw"
-  elif [[ -n "$resolved" ]]; then
-    echo "$resolved"
-  else
-    echo "${raw:-USB Device}"
-  fi
+  local target_vid="${target_vp%%:*}"
+  local target_pid="${target_vp##*:}"
+
+  for dev_dir in /sys/bus/usb/devices/*; do
+    if [[ -f "${dev_dir}/idVendor" && -f "${dev_dir}/idProduct" ]]; then
+      local v p mfg="" prod=""
+      v=$(cat "${dev_dir}/idVendor" 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' || true)
+      p=$(cat "${dev_dir}/idProduct" 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' || true)
+
+      if [[ "$v" == "$target_vid" && "$p" == "$target_pid" ]]; then
+        [[ -f "${dev_dir}/manufacturer" ]] && mfg=$(cat "${dev_dir}/manufacturer" 2>/dev/null || true)
+        [[ -f "${dev_dir}/product" ]] && prod=$(cat "${dev_dir}/product" 2>/dev/null || true)
+        mfg=$(sanitize_str "$mfg" 32)
+        prod=$(sanitize_str "$prod" 32)
+
+        if [[ -n "$mfg" && -n "$prod" && "$mfg" != "$prod" ]]; then
+          echo "${mfg} ${prod}"
+          return
+        elif [[ -n "$prod" ]]; then
+          echo "$prod"
+          return
+        elif [[ -n "$mfg" ]]; then
+          echo "${mfg} Device"
+          return
+        fi
+      fi
+    fi
+  done
+
+  echo "${fallback:-USB Device (${target_vp})}"
 }
 
-# 4. Classify device by Interface Class codes and detect BadUSB combos
-classify_interfaces() {
-  local ifaces="$1"
-  local has_hid=0
-  local has_storage=0
-  local has_net=0
-  local has_audio=0
-  local has_video=0
-  local has_bluetooth=0
-  local is_kbd=0
-  local is_mouse=0
+# 4. Centralized Classification (using backend.py with fallback)
+dev_type="USB Peripheral"
+glyph="󰚥"
+urgency="normal"
+is_combo="single"
+clean_name=""
 
-  # Match primary class at start of descriptor (after whitespace, brace, or line start)
-  if [[ "$ifaces" =~ (^|[[:space:]\{])08: ]]; then has_storage=1; fi
-  if [[ "$ifaces" =~ (^|[[:space:]\{])03: ]]; then has_hid=1; fi
-  if [[ "$ifaces" =~ (^|[[:space:]\{])03:01:01 ]]; then is_kbd=1; fi
-  if [[ "$ifaces" =~ (^|[[:space:]\{])03:01:02 ]]; then is_mouse=1; fi
-  if [[ "$ifaces" =~ (^|[[:space:]\{])(02:|0a:) ]]; then has_net=1; fi
-  if [[ "$ifaces" =~ (^|[[:space:]\{])01: ]]; then has_audio=1; fi
-  if [[ "$ifaces" =~ (^|[[:space:]\{])(0e:|10:) ]]; then has_video=1; fi
-  if [[ "$ifaces" =~ (^|[[:space:]\{])e0: ]]; then has_bluetooth=1; fi
-
-  # 4a. BadUSB Combo Detection (Storage + HID / Storage + Network)
-  if (( has_storage && has_hid )); then
-    echo "⚠️ High-Risk BadUSB (Storage + HID)|󰚌|critical|combo"
-    return
+if [[ -f "$BACKEND_SCRIPT" ]] && command -v python3 &>/dev/null; then
+  class_output=$(python3 "$BACKEND_SCRIPT" --classify "$dev_ifaces" "$raw_name" "$vid_pid" "$dev_connect_type" 2>/dev/null || true)
+  if [[ -n "$class_output" && "$class_output" == *"|"* ]]; then
+    dev_type=$(printf '%s' "$class_output" | cut -d'|' -f1)
+    glyph=$(printf '%s' "$class_output" | cut -d'|' -f2)
+    urgency=$(printf '%s' "$class_output" | cut -d'|' -f3)
+    is_combo=$(printf '%s' "$class_output" | cut -d'|' -f5)
+    clean_name=$(printf '%s' "$class_output" | cut -d'|' -f6)
   fi
-  if (( has_storage && has_net )); then
-    echo "⚠️ High-Risk BadUSB (Storage + Network)|󰚌|critical|combo"
-    return
-  fi
+fi
 
-  # 4b. Single Classifications strictly by interface code
-  if (( is_kbd )); then
-    echo "Keyboard (HID)||normal|single"
+if [[ -z "$clean_name" ]]; then
+  raw_display=$(resolve_from_sysfs "$vid_pid" "$raw_name")
+  clean_name=$(sanitize_str "$raw_display" 64)
+
+  # Pure bash fallback
+  has_storage=0; has_hid=0; has_net=0; is_kbd=0; is_mouse=0
+  if [[ "$dev_ifaces" =~ (^|[[:space:]\{])08: ]]; then has_storage=1; fi
+  if [[ "$dev_ifaces" =~ (^|[[:space:]\{])03:01:01 ]]; then is_kbd=1; has_hid=1; fi
+  if [[ "$dev_ifaces" =~ (^|[[:space:]\{])03:01:02 ]]; then is_mouse=1; has_hid=1; fi
+  if [[ "$dev_ifaces" =~ (^|[[:space:]\{])03: ]]; then has_hid=1; fi
+  if [[ "$dev_ifaces" =~ (^|[[:space:]\{])(02:|0a:) ]]; then has_net=1; fi
+
+  if (( has_storage && (has_hid || has_net) )); then
+    dev_type="⚠️ High-Risk BadUSB"
+    glyph="󰕤"
+    urgency="critical"
+    is_combo="combo"
+  elif (( is_kbd )); then
+    dev_type="USB Keyboard"; glyph="󰌌"; urgency="normal"
   elif (( is_mouse )); then
-    echo "Mouse (HID)|󰍽|normal|single"
-  elif (( has_hid )); then
-    echo "HID Input Device||normal|single"
+    dev_type="USB Mouse"; glyph="󰍽"; urgency="normal"
   elif (( has_storage )); then
-    echo "Mass Storage|󰋊|normal|single"
-  elif (( has_audio )); then
-    echo "Audio Device|󰋋|normal|single"
-  elif (( has_video )); then
-    echo "Camera / Video|󰄀|normal|single"
+    dev_type="Mass Storage"; glyph="󰕒"; urgency="normal"
+  elif [[ "$dev_ifaces" =~ (^|[[:space:]\{])01: ]]; then
+    dev_type="Audio Device"; glyph="󰓗"; urgency="normal"
+  elif [[ "$dev_ifaces" =~ (^|[[:space:]\{])(0e:|10:) ]]; then
+    dev_type="Camera / Video"; glyph="󰄀"; urgency="normal"
   elif (( has_net )); then
-    echo "Network Adapter|󰖩|normal|single"
-  elif (( has_bluetooth )); then
-    echo "Bluetooth Radio|󰂯|normal|single"
-  elif [[ "$ifaces" =~ (^|[[:space:]\{])09: ]]; then
-    echo "USB Hub|󰒃|low|single"
-  else
-    echo "USB Peripheral|󰚥|normal|single"
+    dev_type="Network Adapter"; glyph="󰖩"; urgency="normal"
+  elif [[ "$dev_ifaces" =~ (^|[[:space:]\{])e0: ]]; then
+    dev_type="Bluetooth Radio"; glyph="󰂯"; urgency="normal"
+  elif [[ "$dev_ifaces" =~ (^|[[:space:]\{])09: ]]; then
+    dev_type="USB Hub"; glyph="󰕓"; urgency="low"
   fi
-}
-
-raw_display_name=$(resolve_name "$vid_pid" "$raw_name")
-clean_name=$(sanitize_str "$raw_display_name" 64)
-
-classification_info=$(classify_interfaces "$dev_ifaces")
-dev_type=$(printf '%s' "$classification_info" | cut -d'|' -f1)
-glyph=$(printf '%s' "$classification_info" | cut -d'|' -f2)
-urgency=$(printf '%s' "$classification_info" | cut -d'|' -f3)
-is_combo=$(printf '%s' "$classification_info" | cut -d'|' -f4)
+fi
 
 # 5. Generate distinct replace_id per device hash to prevent notification collisions
 rep_id=9876
@@ -183,7 +196,7 @@ Insert|Update)
 
       if [[ "$is_combo" == "combo" ]]; then
         headline="⚠️ High-Risk Device Blocked"
-        body_text="${clean_name} claims to be both Storage and Keyboard."$'\n'"Click to inspect or reject."
+        body_text="${clean_name} claims to be both Storage and Keyboard/Network."$'\n'"Click to inspect or reject."
       fi
 
       omarchy-notification-send \

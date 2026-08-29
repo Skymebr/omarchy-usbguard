@@ -4,27 +4,52 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_SCRIPT="${SCRIPT_DIR}/backend.py"
+
 target_hash="${1:-}"
 
-# Resolve clean hardware name using Linux USB database (lsusb)
+# Fast sysfs lookup for manufacturer / product without forking lsusb
 resolve_name() {
-  local v_p="$1"
+  local target_vp="${1,,}"
   local raw="$2"
-  local resolved=""
 
-  if [[ -n "$v_p" ]]; then
-    resolved=$(lsusb -d "$v_p" 2>/dev/null | sed -E 's/.*ID [0-9a-fA-F:]+ //' | xargs || true)
+  if [[ -f "$BACKEND_SCRIPT" ]] && command -v python3 &>/dev/null && [[ -n "$target_vp" ]]; then
+    local res
+    res=$(python3 "$BACKEND_SCRIPT" --resolve "$target_vp" "$raw" 2>/dev/null || true)
+    if [[ -n "$res" ]]; then
+      echo "$res"
+      return
+    fi
   fi
 
-  if [[ -n "$resolved" && "$resolved" != "USB Device" && "$resolved" != "Mass Storage" ]]; then
-    echo "$resolved"
-  elif [[ -n "$raw" && "$raw" != "USB Device" && "$raw" != "Mass Storage" ]]; then
-    echo "$raw"
-  elif [[ -n "$resolved" ]]; then
-    echo "$resolved"
-  else
-    echo "${raw:-USB Device}"
+  if [[ -n "$target_vp" ]]; then
+    local target_vid="${target_vp%%:*}"
+    local target_pid="${target_vp##*:}"
+    for dev_dir in /sys/bus/usb/devices/*; do
+      if [[ -f "${dev_dir}/idVendor" && -f "${dev_dir}/idProduct" ]]; then
+        local v p mfg="" prod=""
+        v=$(cat "${dev_dir}/idVendor" 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' || true)
+        p=$(cat "${dev_dir}/idProduct" 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' || true)
+        if [[ "$v" == "$target_vid" && "$p" == "$target_pid" ]]; then
+          [[ -f "${dev_dir}/manufacturer" ]] && mfg=$(cat "${dev_dir}/manufacturer" 2>/dev/null || true)
+          [[ -f "${dev_dir}/product" ]] && prod=$(cat "${dev_dir}/product" 2>/dev/null || true)
+          if [[ -n "$mfg" && -n "$prod" && "$mfg" != "$prod" ]]; then
+            echo "${mfg} ${prod}"
+            return
+          elif [[ -n "$prod" ]]; then
+            echo "$prod"
+            return
+          elif [[ -n "$mfg" ]]; then
+            echo "${mfg} Device"
+            return
+          fi
+        fi
+      fi
+    done
   fi
+
+  echo "${raw:-USB Device (${target_vp})}"
 }
 
 # If invoked for a specific connected device hash
@@ -42,7 +67,7 @@ if [[ -n "$target_hash" ]]; then
     exit 0
   fi
 
-  rule_id=$(printf '%s' "$rule_line" | cut -d':' -f1)
+  rule_id=$(printf '%s' "$rule_line" | cut -d':' -f1 | tr -d '[:space:]')
   vid_pid=""
   raw_name=""
   if [[ "$rule_line" =~ id\ ([0-9a-fA-F]{4}:[0-9a-fA-F]{4}) ]]; then
@@ -107,7 +132,7 @@ while IFS= read -r line; do
     continue
   fi
 
-  rule_id=$(printf '%s' "$line" | cut -d':' -f1)
+  rule_id=$(printf '%s' "$line" | cut -d':' -f1 | tr -d '[:space:]')
   vid_pid=""
   raw_name=""
   rule_hash=""
@@ -124,9 +149,10 @@ while IFS= read -r line; do
 
   d_name=$(resolve_name "$vid_pid" "$raw_name")
   
-  opt_entry="󰅙"$'\t'"Revoke: ${d_name}"$'\t'"Rule #${rule_id} · ID: ${vid_pid:-Unknown}"
+  opt_label="Revoke #${rule_id}: ${d_name}"
+  opt_entry="󰅙"$'\t'"${opt_label}"$'\t'"ID: ${vid_pid:-Unknown}${rule_hash:+ · Hash: ${rule_hash:0:8}…}"
   menu_options+=("$opt_entry")
-  rule_map["Revoke: ${d_name}"]="$rule_id|$rule_hash|$d_name"
+  rule_map["$opt_label"]="$rule_id|$rule_hash|$d_name"
 done < <(usbguard list-rules 2>/dev/null)
 
 if (( ${#menu_options[@]} == 0 )); then

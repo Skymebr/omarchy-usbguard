@@ -120,7 +120,7 @@ ug_classify() {
       ;;
     01) has_audio=1 ;;
     0e) has_video=1 ;;
-    02) has_net=1 ;;
+    02 | 0a) has_net=1 ;;
     e0) has_wireless=1 ;;
     09) has_hub=1 ;;
     *)
@@ -308,19 +308,54 @@ ug_apply() {
 }
 
 ug_debounce() {
-  local key="$1" window_s="${2:-2}"
-  local dir="${XDG_RUNTIME_DIR:-/tmp}/omarchy-usbguard"
-  mkdir -p "$dir"
-  chmod 700 "$dir" 2>/dev/null || true
+  local raw_key="${1-}" window_s="${2:-2}"
+  local key
+  key="$(printf '%s' "$raw_key" | tr -cd 'a-zA-Z0-9_-')"
+  [[ -z "$key" ]] && key="default"
+
+  local base_dir="${XDG_RUNTIME_DIR:-}"
+  if [[ -z "$base_dir" || ! -d "$base_dir" || -L "$base_dir" ]]; then
+    base_dir="/tmp/omarchy-ug-$(id -u)"
+  fi
+
+  local dir="${base_dir}/omarchy-usbguard"
+  if [[ -L "$dir" ]]; then
+    return 0
+  fi
+
+  if [[ ! -d "$dir" ]]; then
+    mkdir -p "$dir" 2>/dev/null || return 0
+    chmod 0700 "$dir" 2>/dev/null || true
+  fi
+
+  # Validate owner
+  local owner
+  owner=$(stat -c '%u' "$dir" 2>/dev/null || echo "-1")
+  if [[ "$owner" != "$(id -u)" ]]; then
+    return 0
+  fi
+
   local file="$dir/last-${key}"
+  if [[ -L "$file" ]]; then
+    rm -f "$file" 2>/dev/null || true
+  fi
+
   local now last=0
   now="$(date +%s)"
   if [[ -f "$file" ]]; then
-    last="$(cat "$file" 2>/dev/null || echo 0)"
+    last="$(head -n 1 "$file" 2>/dev/null || echo 0)"
+    [[ "$last" =~ ^[0-9]+$ ]] || last=0
   fi
+
   if ((now - last < window_s)); then
     return 1
   fi
-  printf '%s' "$now" >"$file"
+
+  local tmpfile="${file}.tmp.$$"
+  if printf '%s\n' "$now" >"$tmpfile" 2>/dev/null; then
+    chmod 0600 "$tmpfile" 2>/dev/null || true
+    mv -f "$tmpfile" "$file" 2>/dev/null || rm -f "$tmpfile" 2>/dev/null || true
+  fi
   return 0
 }
+

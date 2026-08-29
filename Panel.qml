@@ -12,7 +12,7 @@ Panel {
   ipcTarget: "io.github.skymebr.usbguard"
   manageIpc: false
 
-  readonly property string backendScript: Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.skymebr.usbguard/backend.py"
+  readonly property string backendScript: Qt.resolvedUrl("backend.py").toString().replace(/^file:\/\//, "")
 
   property bool daemonActive: false
   property bool isInstalled: true
@@ -128,10 +128,16 @@ Panel {
 
   Timer {
     id: autoRefreshTimer
-    interval: root.opened ? 2500 : 8000
+    interval: root.opened ? 3000 : 15000
     running: true
     repeat: true
     onTriggered: root.refresh()
+  }
+
+  onOpenedChanged: {
+    if (root.opened) {
+      root.refresh()
+    }
   }
 
   // ------------------------------------------------------------- Bar Button
@@ -191,6 +197,7 @@ Panel {
           iconComponent: Component {
             Text {
               text: root.hasBadUsb ? "󰕤" : (root.hasBlocked ? "󰌾" : (root.needsSetup ? "󰕤" : "󰕥"))
+              textFormat: Text.PlainText
               color: root.hasBadUsb || root.hasBlocked || root.needsSetup ? Color.urgent : (root.daemonActive ? Color.accent : Color.muted)
               font.family: Style.font.family
               font.pixelSize: Style.font.display
@@ -226,6 +233,7 @@ Panel {
 
             Text {
               text: "Enable Hardware Protection"
+              textFormat: Text.PlainText
               color: Color.foreground
               font.family: Style.font.family
               font.pixelSize: Style.font.body
@@ -234,6 +242,7 @@ Panel {
 
             Text {
               text: "Scan internal motherboard hardware (webcam, bluetooth, keyboard) into whitelist baseline and activate kernel-level USBGuard protection."
+              textFormat: Text.PlainText
               color: Color.muted
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
@@ -282,6 +291,7 @@ Panel {
           Text {
             visible: root.visibleCount === 0
             text: "No USB devices connected."
+            textFormat: Text.PlainText
             color: Color.muted
             font.family: Style.font.family
             font.pixelSize: Style.font.body
@@ -318,6 +328,7 @@ Panel {
 
                   Text {
                     text: modelData.icon
+                    textFormat: Text.PlainText
                     color: modelData.is_blocked || modelData.is_badusb
                       ? Color.urgent
                       : (modelData.is_internal ? Color.muted : Color.accent)
@@ -333,6 +344,7 @@ Panel {
 
                     Text {
                       text: modelData.name
+                      textFormat: Text.PlainText
                       color: Color.foreground
                       font.family: Style.font.family
                       font.pixelSize: Style.font.body
@@ -343,6 +355,7 @@ Panel {
 
                     Text {
                       text: modelData.type_label + " · " + (modelData.is_internal ? "Internal Hardware" : "Port " + modelData.port + " (" + modelData.vid_pid + ")")
+                      textFormat: Text.PlainText
                       color: modelData.is_blocked ? Color.urgent : Color.muted
                       font.family: Style.font.family
                       font.pixelSize: Style.font.caption
@@ -370,6 +383,7 @@ Panel {
                       Text {
                         id: devPillText
                         text: "Internal"
+                        textFormat: Text.PlainText
                         color: Color.muted
                         font.family: Style.font.family
                         font.pixelSize: Style.font.caption
@@ -445,6 +459,7 @@ Panel {
           Text {
             visible: root.rules.length === 0
             text: "No permanent whitelist rules configured."
+            textFormat: Text.PlainText
             color: Color.muted
             font.family: Style.font.family
             font.pixelSize: Style.font.body
@@ -473,6 +488,7 @@ Panel {
 
                 Text {
                   text: modelData.icon || "󰕥"
+                  textFormat: Text.PlainText
                   color: modelData.is_internal ? Color.muted : Color.accent
                   font.family: Style.font.family
                   font.pixelSize: Style.font.title
@@ -486,6 +502,7 @@ Panel {
 
                   Text {
                     text: modelData.name
+                    textFormat: Text.PlainText
                     color: Color.foreground
                     font.family: Style.font.family
                     font.pixelSize: Style.font.body
@@ -496,6 +513,7 @@ Panel {
 
                   Text {
                     text: modelData.subtitle || (modelData.is_internal ? "Internal Hardware Baseline" : "Permanent Whitelist")
+                    textFormat: Text.PlainText
                     color: Color.muted
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
@@ -517,6 +535,7 @@ Panel {
                   Text {
                     id: rulePillText
                     text: "Baseline"
+                    textFormat: Text.PlainText
                     color: Color.muted
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
@@ -548,6 +567,7 @@ Panel {
           Text {
             id: footerLabel
             text: root.daemonActive ? "󰕥 Hardware Protection Active" : "󰅖 USBGuard is inactive"
+            textFormat: Text.PlainText
             color: root.daemonActive ? Color.muted : Color.urgent
             font.family: Style.font.family
             font.pixelSize: Style.font.caption

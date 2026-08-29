@@ -1,0 +1,41 @@
+name: Lint & CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck
+        run: |
+          shellcheck omarchy-setup-security-usbguard
+          shellcheck omarchy-usbguard-watch
+          shellcheck omarchy-usbguard-event
+          shellcheck omarchy-usbguard-manage
+          shellcheck omarchy-usbguard-prompt
+          shellcheck omarchy-usbguard-allow
+          shellcheck omarchy-usbguard-lib
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python Linters
+        run: pip install ruff mypy
+
+      - name: Run Ruff Linter
+        run: ruff check backend.py test_backend.py
+
+      - name: Run Unit Tests
+        run: python3 -m unittest discover -s . -p "test_*.py"

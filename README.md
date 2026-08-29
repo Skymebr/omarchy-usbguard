@@ -192,22 +192,23 @@ omarchy-setup-security-usbguard --remove
 
 ---
 
-## Verification and Testing
+## Emergency Recovery (Troubleshooting)
 
-1. Verify that both system and user services are active:
-   ```bash
-   systemctl is-active usbguard.service
-   systemctl --user is-active omarchy-usbguard-notify.service
-   ```
-2. Inspect the active baseline rules:
-   ```bash
-   usbguard list-rules
-   ```
-3. Connect an unauthorized USB storage drive:
-   * A desktop notification will appear detailing the resolved vendor and interface class.
-   * Clicking the toast presents authorization choices.
-   * Disconnecting the drive safely triggers an auto-dismissing disconnect notice.
+If you accidentally misconfigure rules or boot into a locked session without working keyboard/mouse input:
 
+1. Switch to a TTY (`Ctrl + Alt + F3`) or boot into rescue mode.
+2. Stop the daemon and restore your previous policy backup:
+   ```bash
+   sudo systemctl stop usbguard
+   sudo cp /etc/usbguard/rules.conf.bak.* /etc/usbguard/rules.conf 2>/dev/null || sudo rm -f /etc/usbguard/rules.conf
+   sudo systemctl restart usbguard
+   ```
+3. To disable USBGuard entirely from the console:
+   ```bash
+   omarchy-setup-security-usbguard --remove
+   ```
+
+---
 ---
 
 ## Security Policy
