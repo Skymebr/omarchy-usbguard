@@ -7,6 +7,10 @@
 
 A zero-friction, kernel-level USB device authorization, BadUSB mitigation suite, and native status bar plugin for the **[Omarchy](https://omarchy.org)** Linux desktop environment.
 
+<p align="center">
+  <img src="preview.png" alt="Omarchy USBGuard Screenshot" width="480">
+</p>
+
 ```
   󰌾 1        ┌────────────────────────────────────────────────────────┐
              │  󰌾  USBGuard                                      󰑐   │
