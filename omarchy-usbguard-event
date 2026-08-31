@@ -169,6 +169,22 @@ else
   rep_id=$(( 1000 + ( dev_id % 1000 ) ))
 fi
 
+# Helper: suppress notification spam for internal/hardwired and infrastructure hardware
+is_silent_device() {
+  # 1. Internal/hardwired motherboard components (webcam, bluetooth, trackpad)
+  if [[ "$dev_connect_type" == "hardwired" ]]; then
+    return 0
+  fi
+  # 2. USB Hubs, Root Hubs, Host Controllers
+  if [[ "$dev_type" == *"Hub"* || "$clean_name" == *"Root Hub"* || "$clean_name" == *"Host Controller"* || "$dev_ifaces" =~ (^|[[:space:]\{])09: ]]; then
+    return 0
+  fi
+  if type ug_is_boring_device &>/dev/null && ug_is_boring_device "$dev_type" "$clean_name"; then
+    return 0
+  fi
+  return 1
+}
+
 # 6. Event Handling
 case "$event" in
 Insert|Update)
@@ -190,32 +206,39 @@ Insert|Update)
   fi
 
   if [[ "$target" == "allow" ]]; then
-    # Device matched an existing allow policy rule (Click to revoke or manage)
-    omarchy-notification-send \
-      -r "$rep_id" \
-      -g "$glyph" \
-      -u low \
-      -t 4000 \
-      --app-name "USBGuard" \
-      "USB Device Connected" \
-      "${clean_name} · ${dev_type}"$'\n'"Click to manage or revoke trust." \
-      --exec omarchy-usbguard-manage "${dev_hash:-}" || true
+    # Only notify for newly inserted external devices, never for internal hardware or hubs
+    if [[ "$event" == "Insert" ]] && ! is_silent_device; then
+      if ! type ug_debounce &>/dev/null || ug_debounce "${dev_hash:-$dev_id}" 3; then
+        omarchy-notification-send \
+          -r "$rep_id" \
+          -g "$glyph" \
+          -u low \
+          -t 3500 \
+          --app-name "USBGuard" \
+          "USB Device Connected" \
+          "${clean_name} · ${dev_type}"$'\n'"Click to manage or revoke trust." \
+          --exec omarchy-usbguard-manage "${dev_hash:-}" || true
+      fi
+    fi
   elif [[ "$target" == "block" || "$target" == "reject" ]]; then
     # Short wait for policy evaluation to avoid transient probe race
     sleep 0.08
     active_target=$(usbguard list-devices 2>/dev/null | grep -E "^${dev_id}:" | awk '{print $2}' || true)
     
     if [[ "$active_target" == "allow" ]]; then
-      # Policy immediately matched and allowed the device
-      omarchy-notification-send \
-        -r "$rep_id" \
-        -g "$glyph" \
-        -u low \
-        -t 4000 \
-        --app-name "USBGuard" \
-        "USB Device Connected" \
-        "${clean_name} · ${dev_type}"$'\n'"Click to manage or revoke trust." \
-        --exec omarchy-usbguard-manage "${dev_hash:-}" || true
+      if [[ "$event" == "Insert" ]] && ! is_silent_device; then
+        if ! type ug_debounce &>/dev/null || ug_debounce "${dev_hash:-$dev_id}" 3; then
+          omarchy-notification-send \
+            -r "$rep_id" \
+            -g "$glyph" \
+            -u low \
+            -t 3500 \
+            --app-name "USBGuard" \
+            "USB Device Connected" \
+            "${clean_name} · ${dev_type}"$'\n'"Click to manage or revoke trust." \
+            --exec omarchy-usbguard-manage "${dev_hash:-}" || true
+        fi
+      fi
     else
       headline="USB Device Blocked"
       body_text="${clean_name} · ${dev_type}"$'\n'"Click to manage authorization."
@@ -237,14 +260,16 @@ Insert|Update)
   fi
   ;;
 Remove)
-  # Low-urgency disconnect toast, replaces any pending blocked notification for this device
-  omarchy-notification-send \
-    -r "$rep_id" \
-    -g "$glyph" \
-    -u low \
-    -t 3000 \
-    --app-name "USBGuard" \
-    "USB Device Disconnected" \
-    "${clean_name} · ${dev_type}" || true
+  # Only notify removal for external devices, never for internal hubs/hardware
+  if ! is_silent_device; then
+    omarchy-notification-send \
+      -r "$rep_id" \
+      -g "$glyph" \
+      -u low \
+      -t 2500 \
+      --app-name "USBGuard" \
+      "USB Device Disconnected" \
+      "${clean_name} · ${dev_type}" || true
+  fi
   ;;
 esac
