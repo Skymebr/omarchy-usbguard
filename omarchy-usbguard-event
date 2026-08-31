@@ -6,6 +6,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_SCRIPT="${SCRIPT_DIR}/backend.py"
+LIB_SCRIPT="${SCRIPT_DIR}/omarchy-usbguard-lib"
+
+if [[ ! -f "$LIB_SCRIPT" ]]; then
+  LIB_SCRIPT="$(command -v omarchy-usbguard-lib || true)"
+fi
+if [[ -n "$LIB_SCRIPT" && -f "$LIB_SCRIPT" ]]; then
+  # shellcheck source=/dev/null
+  source "$LIB_SCRIPT"
+fi
 
 event="${USBGUARD_DEVICE_EVENT:-}"
 dev_id="${USBGUARD_DEVICE_ID:-}"
@@ -163,6 +172,23 @@ fi
 # 6. Event Handling
 case "$event" in
 Insert|Update)
+  # Screen Lock Guard: Check if desktop session is locked
+  if type ug_is_screen_locked &>/dev/null && ug_is_screen_locked; then
+    if [[ "$target" == "block" || "$target" == "reject" ]]; then
+      # Screen is locked: Enforce strict rejection and log attempt without popping interactive UI
+      usbguard reject-device "$dev_id" >/dev/null 2>&1 || true
+      if type ug_log_locked_attempt &>/dev/null; then
+        ug_log_locked_attempt "$dev_id" "$vid_pid" "$clean_name" "$target" "${dev_hash:-}" "$dev_ifaces" "$dev_connect_type" "$is_combo" || true
+      fi
+      exit 0
+    fi
+  else
+    # Screen is unlocked: flush any pending alerts from previous locked insertions
+    if type ug_flush_locked_attempts &>/dev/null; then
+      ug_flush_locked_attempts || true
+    fi
+  fi
+
   if [[ "$target" == "allow" ]]; then
     # Device matched an existing allow policy rule (Click to revoke or manage)
     omarchy-notification-send \

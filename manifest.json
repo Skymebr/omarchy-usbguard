@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.skymebr.usbguard",
   "name": "USBGuard",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Skymebr",
   "license": "MIT",
   "description": "Zero-friction kernel-level USB authorization, BadUSB mitigation, and device manager for Omarchy.",

@@ -359,3 +359,237 @@ ug_debounce() {
   return 0
 }
 
+# ------------------------------------------------------------------------------
+# Screen Guard: lock-state detection and locked-insertion audit log
+# ------------------------------------------------------------------------------
+
+ug_runtime_dir() {
+  local uid base owner
+  uid="$(id -u)"
+  base="/run/user/${uid}"
+  if [[ ! -d "$base" || -L "$base" ]]; then
+    base="${XDG_RUNTIME_DIR:-}"
+  fi
+  if [[ -z "$base" || ! -d "$base" || -L "$base" ]]; then
+    return 1
+  fi
+  owner="$(stat -c '%u' "$base" 2>/dev/null || echo "-1")"
+  if [[ "$owner" != "$uid" ]]; then
+    return 1
+  fi
+  printf '%s' "$base"
+}
+
+ug_locked_log_path() {
+  local base
+  base="$(ug_runtime_dir)" || return 1
+  printf '%s' "${base}/usbguard-locked-attempts.log"
+}
+
+ug_locked_pending_path() {
+  local base
+  base="$(ug_runtime_dir)" || return 1
+  printf '%s' "${base}/usbguard-locked-attempts.pending"
+}
+
+# True when the graphical session is locked. Checks, in order:
+#   1. hyprlock / swaylock processes for this user
+#   2. logind LockedHint (org.freedesktop.login1, D-Bus and loginctl)
+#   3. Omarchy Quickshell lock and Hyprland ext-session-lock
+# Fail-open (unlocked) if every probe is unavailable or times out.
+ug_is_screen_locked() {
+  local uid
+  uid="$(id -u)"
+
+  if pgrep -x -u "$uid" hyprlock >/dev/null 2>&1; then
+    return 0
+  fi
+  if pgrep -x -u "$uid" swaylock >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local dbus_out=""
+  if command -v busctl >/dev/null 2>&1; then
+    dbus_out="$(busctl --system get-property org.freedesktop.login1 \
+      /org/freedesktop/login1/session/auto \
+      org.freedesktop.login1.Session LockedHint 2>/dev/null || true)"
+    if [[ "$dbus_out" == *'b true'* ]]; then
+      return 0
+    fi
+  fi
+
+  local hint=""
+  if command -v loginctl >/dev/null 2>&1 && [[ -n "${XDG_SESSION_ID:-}" ]]; then
+    hint="$(loginctl show-session "$XDG_SESSION_ID" -p LockedHint --value 2>/dev/null || true)"
+    if [[ "$hint" == "yes" ]]; then
+      return 0
+    fi
+  fi
+
+  # Omarchy's default locker is Quickshell (omarchy-shell lock), not hyprlock.
+  # It uses ext-session-lock and may not set logind LockedHint.
+  local reply=""
+  if command -v omarchy-shell >/dev/null 2>&1; then
+    reply="$(timeout --kill-after=0.1s 0.5s omarchy-shell lock isLocked 2>/dev/null || true)"
+    if [[ "$reply" == "true" ]]; then
+      return 0
+    fi
+  fi
+
+  if command -v omarchy-hyprland-session-locked >/dev/null 2>&1; then
+    if timeout --kill-after=0.1s 0.5s omarchy-hyprland-session-locked >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+ug_append_secure_line() {
+  local file="$1" line="$2"
+  local uid owner dir old_umask
+  uid="$(id -u)"
+  dir="$(dirname "$file")"
+
+  if [[ -L "$dir" || -L "$file" ]]; then
+    return 1
+  fi
+  if [[ ! -d "$dir" ]]; then
+    return 1
+  fi
+  owner="$(stat -c '%u' "$dir" 2>/dev/null || echo "-1")"
+  [[ "$owner" == "$uid" ]] || return 1
+
+  if [[ -f "$file" ]]; then
+    owner="$(stat -c '%u' "$file" 2>/dev/null || echo "-1")"
+    [[ "$owner" == "$uid" ]] || return 1
+  fi
+
+  old_umask="$(umask)"
+  umask 077
+  if ! printf '%s\n' "$line" >>"$file" 2>/dev/null; then
+    umask "$old_umask"
+    return 1
+  fi
+  umask "$old_umask"
+  chmod 0600 "$file" 2>/dev/null || true
+}
+
+ug_rotate_if_huge() {
+  local file="$1" max_bytes="${2:-131072}" keep_lines="${3:-200}"
+  local sz owner uid tmp
+  uid="$(id -u)"
+  [[ -f "$file" && ! -L "$file" ]] || return 0
+  owner="$(stat -c '%u' "$file" 2>/dev/null || echo "-1")"
+  [[ "$owner" == "$uid" ]] || return 0
+  sz="$(stat -c '%s' "$file" 2>/dev/null || echo 0)"
+  [[ "$sz" =~ ^[0-9]+$ ]] || return 0
+  ((sz > max_bytes)) || return 0
+  tmp="${file}.tmp.$$"
+  if tail -n "$keep_lines" "$file" >"$tmp" 2>/dev/null; then
+    chmod 0600 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$file" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  else
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+}
+
+# Append one locked-insertion record to the audit log and the pending-alert file.
+# Usage: ug_log_locked_attempt id vidpid name target hash ifaces connect [combo]
+ug_log_locked_attempt() {
+  local id="${1-}" vidpid="${2-}" name="${3-}" target="${4-}"
+  local hash="${5-}" ifaces="${6-}" connect="${7-}" combo="${8:-single}"
+  local log pending ts line
+
+  id="$(ug_sanitize "$id" 16)"
+  vidpid="$(ug_sanitize "$vidpid" 16)"
+  name="$(ug_sanitize "$name" 64)"
+  target="$(ug_sanitize "$target" 16)"
+  hash="$(ug_sanitize "$hash" 64)"
+  ifaces="$(ug_sanitize "$ifaces" 48)"
+  connect="$(ug_sanitize "$connect" 24)"
+  combo="$(ug_sanitize "$combo" 16)"
+
+  [[ -n "$name" ]] || name="USB device"
+  [[ -n "$vidpid" ]] || vidpid="unknown"
+  [[ -n "$id" ]] || id="?"
+
+  ts="$(date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S')"
+  line="${ts} id=${id} vidpid=${vidpid} target=${target} combo=${combo} connect=${connect} ifaces=${ifaces} hash=${hash} name=${name}"
+
+  log="$(ug_locked_log_path 2>/dev/null || true)"
+  pending="$(ug_locked_pending_path 2>/dev/null || true)"
+  if [[ -n "$log" ]]; then
+    ug_rotate_if_huge "$log" || true
+    ug_append_secure_line "$log" "$line" || true
+  fi
+  if [[ -n "$pending" ]]; then
+    ug_append_secure_line "$pending" "$line" || true
+  fi
+}
+
+# Notify about devices rejected while the session was locked, then clear pending.
+ug_flush_locked_attempts() {
+  if ug_is_screen_locked; then
+    return 0
+  fi
+
+  local pending uid owner
+  pending="$(ug_locked_pending_path 2>/dev/null || true)"
+  [[ -n "$pending" && -f "$pending" && ! -L "$pending" ]] || return 0
+
+  uid="$(id -u)"
+  owner="$(stat -c '%u' "$pending" 2>/dev/null || echo "-1")"
+  [[ "$owner" == "$uid" ]] || return 0
+
+  local count=0
+  local summary=""
+  local line name vidpid shown=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] || continue
+    count=$((count + 1))
+    if ((shown < 5)); then
+      name="${line#* name=}"
+      [[ "$name" == "$line" ]] && name="USB device"
+      vidpid=""
+      if [[ "$line" =~ vidpid=([^[:space:]]+) ]]; then
+        vidpid="${BASH_REMATCH[1]}"
+      fi
+      if [[ -n "$summary" ]]; then
+        summary+=$'\n'
+      fi
+      if [[ -n "$vidpid" && "$vidpid" != "unknown" ]]; then
+        summary+="${name} (${vidpid})"
+      else
+        summary+="${name}"
+      fi
+      shown=$((shown + 1))
+    fi
+  done <"$pending"
+
+  if ((count <= 0)); then
+    rm -f "$pending" 2>/dev/null || true
+    return 0
+  fi
+
+  local extra=""
+  if ((count > shown)); then
+    extra=$'\n'"… and $((count - shown)) more"
+  fi
+
+  local noun="device"
+  ((count == 1)) || noun="devices"
+
+  if command -v omarchy-notification-send >/dev/null 2>&1; then
+    omarchy-notification-send \
+      -r 9878 \
+      -g "󰌾" \
+      -u critical \
+      --app-name "USBGuard" \
+      "USB blocked while locked" \
+      "${count} ${noun} rejected while the screen was locked."$'\n'"${summary}${extra}" || true
+  fi
+
+  rm -f "$pending" 2>/dev/null || true
+}
+
