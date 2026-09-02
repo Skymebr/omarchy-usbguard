@@ -232,8 +232,8 @@ ug_replace_id() {
 }
 
 ug_is_boring_device() {
-  local classes="${1-}" name="${2-}"
-  [[ "$classes" == "Hub" ]] && return 0
+  local dev_classes="${1-}" name="${2-}"
+  [[ "$dev_classes" == "Hub" ]] && return 0
   [[ "$name" == *"Host Controller"* ]] && return 0
   return 1
 }
