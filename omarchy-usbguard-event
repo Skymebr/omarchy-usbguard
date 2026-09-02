@@ -40,7 +40,6 @@ sanitize_str() {
 # 2. Extract fields from device rule
 vid_pid=""
 raw_name=""
-dev_serial=""
 dev_hash=""
 dev_ifaces=""
 dev_connect_type=""
@@ -50,9 +49,6 @@ if [[ "$rule" =~ id\ ([0-9a-fA-F]{4}:[0-9a-fA-F]{4}) ]]; then
 fi
 if [[ "$rule" =~ name\ \"([^\"]+)\" ]]; then
   raw_name="${BASH_REMATCH[1]}"
-fi
-if [[ "$rule" =~ serial\ \"([^\"]+)\" ]]; then
-  dev_serial="${BASH_REMATCH[1]}"
 fi
 if [[ "$rule" =~ hash\ \"([^\"]+)\" ]]; then
   dev_hash="${BASH_REMATCH[1]}"
@@ -80,8 +76,8 @@ resolve_from_sysfs() {
   for dev_dir in /sys/bus/usb/devices/*; do
     if [[ -f "${dev_dir}/idVendor" && -f "${dev_dir}/idProduct" ]]; then
       local v p mfg="" prod=""
-      v=$(cat "${dev_dir}/idVendor" 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' || true)
-      p=$(cat "${dev_dir}/idProduct" 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' || true)
+      v=$(tr -d '[:space:]' < "${dev_dir}/idVendor" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
+      p=$(tr -d '[:space:]' < "${dev_dir}/idProduct" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
 
       if [[ "$v" == "$target_vid" && "$p" == "$target_pid" ]]; then
         [[ -f "${dev_dir}/manufacturer" ]] && mfg=$(cat "${dev_dir}/manufacturer" 2>/dev/null || true)
