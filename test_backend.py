@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import unittest
-from backend import classify_device, scan_sysfs_usb, resolve_hardware_names_bulk
+
+from backend import classify_device, sanitize_field, scan_sysfs_usb
+
 
 class TestUSBGuardBackend(unittest.TestCase):
 
@@ -61,7 +63,6 @@ class TestUSBGuardBackend(unittest.TestCase):
         self.assertIsInstance(data["by_vidpid"], dict)
 
     def test_sanitize_field(self):
-        from backend import sanitize_field
         self.assertEqual(sanitize_field("<b>Safe Name</b>"), "Safe Name")
         self.assertEqual(sanitize_field("<script>alert(1)</script>Device"), "alert(1)Device")
         self.assertEqual(sanitize_field("Device\x00\x1bName"), "Device Name")

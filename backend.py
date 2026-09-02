@@ -5,13 +5,13 @@ Blazing fast hardware database resolution, BadUSB inspection,
 unified device-to-rule linking, and clean JSON formatting for Quickshell.
 """
 
-import sys
+import glob
+import json
 import os
 import re
-import json
-import subprocess
 import shutil
-import glob
+import subprocess
+import sys
 from collections import defaultdict
 
 SUBPROCESS_TIMEOUT = 2.5
@@ -58,7 +58,7 @@ def scan_sysfs_usb():
                     vid = f.read(16).strip().lower()
                 with open(id_product_f, "r", encoding="utf-8", errors="ignore") as f:
                     pid = f.read(16).strip().lower()
-            except Exception:
+            except (OSError, UnicodeDecodeError):
                 continue
 
             if not re.match(r'^[0-9a-f]{4}$', vid) or not re.match(r'^[0-9a-f]{4}$', pid):
@@ -73,13 +73,13 @@ def scan_sysfs_usb():
                 try:
                     with open(mfg_f, "r", encoding="utf-8", errors="ignore") as f:
                         mfg = sanitize_field(f.read(MAX_STR_LEN))
-                except Exception:
+                except (OSError, UnicodeDecodeError):
                     pass
             if os.path.isfile(prod_f):
                 try:
                     with open(prod_f, "r", encoding="utf-8", errors="ignore") as f:
                         prod = sanitize_field(f.read(MAX_STR_LEN))
-                except Exception:
+                except (OSError, UnicodeDecodeError):
                     pass
 
             info = {
@@ -141,7 +141,7 @@ def resolve_hardware_names_bulk(target_vid_pids):
                                 vendors[current_vendor] = parts[1].strip()
                     if len(results) == len(targets):
                         break
-        except Exception:
+        except (OSError, UnicodeDecodeError):
             pass
 
     return results, vendors
@@ -176,11 +176,11 @@ def classify_device(ifaces, raw_name, vid_pid, connect_type, resolved_hw_name=""
             has_hid = True
         elif c.startswith("03:"):
             has_hid = True
-        elif c.startswith("02:") or c.startswith("0a:"):
+        elif c.startswith(("02:", "0a:")):
             has_net = True
         elif c.startswith("01:"):
             has_audio = True
-        elif c.startswith("0e:") or c.startswith("10:"):
+        elif c.startswith(("0e:", "10:")):
             has_video = True
         elif c.startswith("e0:"):
             has_bluetooth = True
@@ -355,15 +355,15 @@ def get_status_payload():
     except subprocess.TimeoutExpired:
         try:
             p_dev.kill()
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
         try:
             p_rules.kill()
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
         dev_out, rules_out = "", ""
         daemon_active = False
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         daemon_active = False
 
     sysfs_data = scan_sysfs_usb()
@@ -608,13 +608,13 @@ def untrust_and_block(dev_id):
     try:
         p1 = subprocess.Popen(["usbguard", "list-devices"], stdout=subprocess.PIPE, text=True)
         dev_out, _ = p1.communicate(timeout=SUBPROCESS_TIMEOUT)
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         pass
 
     try:
         p2 = subprocess.Popen(["usbguard", "list-rules"], stdout=subprocess.PIPE, text=True)
         rules_out, _ = p2.communicate(timeout=SUBPROCESS_TIMEOUT)
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         pass
 
     dev_hash = ""
@@ -639,21 +639,19 @@ def untrust_and_block(dev_id):
                     continue
 
                 matched = False
-                if dev_hash and re.search(r'(^|\s)hash\s+"' + re.escape(dev_hash) + r'"', rrest):
-                    matched = True
-                elif dev_vid and re.search(r'(^|\s)id\s+' + re.escape(dev_vid) + r'(\s|$)', rrest, re.IGNORECASE):
+                if dev_hash and re.search(r'(^|\s)hash\s+"' + re.escape(dev_hash) + r'"', rrest) or dev_vid and re.search(r'(^|\s)id\s+' + re.escape(dev_vid) + r'(\s|$)', rrest, re.IGNORECASE):
                     matched = True
 
                 if matched and re.match(r'^\d+$', rid):
                     try:
                         subprocess.run(["usbguard", "remove-rule", rid], check=False, timeout=SUBPROCESS_TIMEOUT)
-                    except Exception:
+                    except (OSError, subprocess.SubprocessError):
                         pass
 
     # Block device
     try:
         subprocess.run(["usbguard", "block-device", dev_id_clean], check=False, timeout=SUBPROCESS_TIMEOUT)
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         pass
 
 def main():
@@ -702,7 +700,7 @@ def main():
             args.append("-p")
         try:
             subprocess.run(args, check=False, timeout=SUBPROCESS_TIMEOUT)
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
         print(json.dumps({"success": True}))
         return
@@ -719,7 +717,7 @@ def main():
         if dev_id:
             try:
                 subprocess.run(["usbguard", "block-device", dev_id], check=False, timeout=SUBPROCESS_TIMEOUT)
-            except Exception:
+            except (OSError, subprocess.SubprocessError):
                 pass
         print(json.dumps({"success": True}))
         return
@@ -729,7 +727,7 @@ def main():
         if dev_id:
             try:
                 subprocess.run(["usbguard", "reject-device", dev_id], check=False, timeout=SUBPROCESS_TIMEOUT)
-            except Exception:
+            except (OSError, subprocess.SubprocessError):
                 pass
         print(json.dumps({"success": True}))
         return
@@ -739,7 +737,7 @@ def main():
         if rule_id:
             try:
                 subprocess.run(["usbguard", "remove-rule", rule_id], check=False, timeout=SUBPROCESS_TIMEOUT)
-            except Exception:
+            except (OSError, subprocess.SubprocessError):
                 pass
         print(json.dumps({"success": True}))
         return
